@@ -181,7 +181,7 @@ async function removeGameParticipant(gameId, playerId) {
 }
 
 /**
- * Log an action (vote)
+ * Log an action (vote) - Single action
  */
 async function logAction(gameId, playerId, playerName, tickNumber, actionType, x, y, wasExecuted = false, voteCount = 1, wasTie = false, result = null, cellHadBomb = null, cellAdjacentBombs = null) {
     try {
@@ -199,6 +199,55 @@ async function logAction(gameId, playerId, playerName, tickNumber, actionType, x
         );
     } catch (error) {
         console.error('Error in logAction:', error);
+    }
+}
+
+/**
+ * Log multiple actions in a single batch (MUCH faster for high concurrency)
+ */
+async function logActionsBatch(actions) {
+    if (!actions || actions.length === 0) return;
+
+    try {
+        // Build values array for bulk insert
+        const values = [];
+        const params = [];
+        let paramIndex = 1;
+
+        for (const action of actions) {
+            values.push(
+                `($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, ` +
+                `$${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, ` +
+                `$${paramIndex++}, $${paramIndex++}, $${paramIndex++})`
+            );
+            params.push(
+                action.gameId,
+                action.playerId,
+                action.playerName,
+                action.tickNumber,
+                action.actionType,
+                action.x,
+                action.y,
+                action.wasExecuted,
+                action.voteCount,
+                action.wasTie,
+                action.result,
+                action.cellHadBomb,
+                action.cellAdjacentBombs
+            );
+        }
+
+        const query = `
+            INSERT INTO actions (
+                game_id, player_id, player_name, tick_number, action_type,
+                cell_x, cell_y, was_executed, vote_count, was_tie,
+                result, cell_had_bomb, cell_adjacent_bombs
+            ) VALUES ${values.join(', ')}
+        `;
+
+        await pool.query(query, params);
+    } catch (error) {
+        console.error('Error in logActionsBatch:', error);
     }
 }
 
@@ -316,6 +365,7 @@ module.exports = {
     addGameParticipant,
     removeGameParticipant,
     logAction,
+    logActionsBatch,
     updatePlayerStats,
     getPlayerStats,
     getGlobalStats,

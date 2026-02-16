@@ -46,6 +46,22 @@ let gameState = {
     totalUnflags: 0,
 };
 
+// Rate limiting for player actions
+const playerVoteLimits = new Map(); // socketId -> { count, resetTime }
+const MAX_VOTES_PER_TICK = 1; // Each player gets ONE vote per tick - makes them think strategically!
+
+// Debounced player list updates
+let playerListUpdateQueued = false;
+function queuePlayerListUpdate() {
+    if (!playerListUpdateQueued) {
+        playerListUpdateQueued = true;
+        setTimeout(() => {
+            io.emit('playerListUpdate', getPlayerList());
+            playerListUpdateQueued = false;
+        }, 500); // Batch updates every 500ms
+    }
+}
+
 // ============== CELL STRUCTURE ==============
 // Each cell has:
 // - isBomb: boolean
@@ -313,8 +329,10 @@ async function tick() {
     const wasGameOverBefore = gameState.isGameOver;
     const results = processActions(actionsToProcess);
 
-    // Log all actions to database (both executed and not executed)
-    if (process.env.ENABLE_DB_LOGGING !== 'false' && gameState.currentGameId) {
+    // Log all actions to database using BATCH INSERT (much faster!)
+    if (process.env.ENABLE_DB_LOGGING !== 'false' && gameState.currentGameId && actionsToProcess.length > 0) {
+        const actionLogs = [];
+
         for (const action of actionsToProcess) {
             const cell = gameState.grid[action.x][action.y];
             const wasExecuted = results.some(r => r.x === action.x && r.y === action.y && r.action === action.type);
@@ -334,23 +352,25 @@ async function tick() {
             const player = gameState.players.get(action.playerId);
             const persistentId = player?.persistentId;
 
-            await db.logAction(
-                gameState.currentGameId,
-                persistentId,
-                action.playerName,
-                gameState.tickNumber,
-                action.type,
-                action.x,
-                action.y,
+            actionLogs.push({
+                gameId: gameState.currentGameId,
+                playerId: persistentId,
+                playerName: action.playerName,
+                tickNumber: gameState.tickNumber,
+                actionType: action.type,
+                x: action.x,
+                y: action.y,
                 wasExecuted,
-                result?.votes || 1,
-                result?.wasTie || false,
-                actionResult,
-                cell.isBomb,
-                cell.adjacentBombs
-            );
+                voteCount: result?.votes || 1,
+                wasTie: result?.wasTie || false,
+                result: actionResult,
+                cellHadBomb: cell.isBomb,
+                cellAdjacentBombs: cell.adjacentBombs
+            });
         }
 
+        // Single batch insert instead of N sequential inserts - MUCH FASTER!
+        await db.logActionsBatch(actionLogs);
         gameState.totalActions += actionsToProcess.length;
     }
 
@@ -528,14 +548,15 @@ io.on('connection', async (socket) => {
 
         console.log(`👤 ${customName} connected (${gameState.players.size} total) [${persistentId}]`);
 
-        // Broadcast player joined and send player list to all
+        // Broadcast player joined
         io.emit('playerJoined', {
             playerId: socket.id,
             playerName: customName,
             playerCount: gameState.players.size
         });
 
-        io.emit('playerListUpdate', getPlayerList());
+        // Debounced player list update (batches rapid joins)
+        queuePlayerListUpdate();
     });
 
     // Send initial state immediately (before registration)
@@ -562,6 +583,35 @@ io.on('connection', async (socket) => {
         if (x < 0 || x >= CONFIG.gridSize || y < 0 || y >= CONFIG.gridSize) return;
         if (!['reveal', 'flag', 'unflag'].includes(type)) return;
 
+        // Rate limiting - prevent spam
+        const now = Date.now();
+        const limit = playerVoteLimits.get(socket.id) || { count: 0, resetTime: now + CONFIG.tickInterval };
+
+        // Reset counter every tick interval
+        if (now > limit.resetTime) {
+            limit.count = 0;
+            limit.resetTime = now + CONFIG.tickInterval;
+        }
+
+        // Allow only 1 vote per tick - strategic decision making!
+        if (limit.count >= MAX_VOTES_PER_TICK) {
+            // Don't log warning for single vote limit - this is expected behavior
+            socket.emit('voteLimitReached', {
+                message: 'You can only vote once per tick. Choose wisely!',
+                nextTickIn: limit.resetTime - now
+            });
+            return;
+        }
+
+        limit.count++;
+        playerVoteLimits.set(socket.id, limit);
+
+        // Prevent memory overflow
+        if (gameState.pendingActions.length > 10000) {
+            console.error('⚠️ Pending actions overflow! Clearing oldest...');
+            gameState.pendingActions = gameState.pendingActions.slice(-5000);
+        }
+
         // Queue the action
         gameState.pendingActions.push({
             playerId: socket.id,
@@ -572,16 +622,9 @@ io.on('connection', async (socket) => {
             timestamp: Date.now()
         });
 
-        // Broadcast pending action to all clients (for visual feedback)
-        io.emit('actionQueued', {
-            playerId: socket.id,
-            playerName: gameState.players.get(socket.id)?.name,
-            playerColor: gameState.players.get(socket.id)?.color,
-            x,
-            y,
-            type,
-            pendingCount: gameState.pendingActions.length
-        });
+        // REMOVED: actionQueued broadcast
+        // With 1000 users, broadcasting every action = 500,000 messages per tick
+        // Instead, clients can show their own pending actions locally
     });
 
     // Handle reset request
@@ -613,13 +656,21 @@ io.on('connection', async (socket) => {
 
         console.log(`👤 ${oldName} changed name to ${trimmedName}`);
 
-        // Broadcast updated player list
-        io.emit('playerListUpdate', getPlayerList());
+        // Debounced player list update
+        queuePlayerListUpdate();
     });
 
     // Handle disconnect
     socket.on('disconnect', async () => {
         const player = gameState.players.get(socket.id);
+
+        // Clean up rate limit tracking
+        playerVoteLimits.delete(socket.id);
+
+        // Remove pending actions from this player
+        gameState.pendingActions = gameState.pendingActions.filter(
+            a => a.playerId !== socket.id
+        );
 
         // Remove from game participants in database
         if (process.env.ENABLE_DB_LOGGING !== 'false' && player?.persistentId && gameState.currentGameId) {
@@ -635,7 +686,8 @@ io.on('connection', async (socket) => {
             playerCount: gameState.players.size
         });
 
-        io.emit('playerListUpdate', getPlayerList());
+        // Debounced player list update
+        queuePlayerListUpdate();
     });
 });
 

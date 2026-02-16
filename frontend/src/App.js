@@ -22,6 +22,8 @@ function App() {
   const [showNameDialog, setShowNameDialog] = useState(true);
   const [customName, setCustomName] = useState('');
   const [gameOverPlayer, setGameOverPlayer] = useState(null);
+  const [hasVotedThisTick, setHasVotedThisTick] = useState(false);
+  const [voteMessage, setVoteMessage] = useState('');
 
   // Generate or get persistent player ID
   const getPersistentPlayerId = () => {
@@ -98,11 +100,12 @@ function App() {
       setTimeToTick(data.nextTickIn);
       setActionHistory(data.actionHistory || []);
       setGameOverPlayer(data.gameOverPlayer);
+      setHasVotedThisTick(false); // Reset vote limit on new tick
+      setVoteMessage('');
     });
 
-    socket.on('actionQueued', (data) => {
-      setPendingActions(prev => [...prev, data]);
-    });
+    // REMOVED: actionQueued - handle pending state locally for better performance
+    // With 1000 users, broadcasting every action would create 500k messages per tick
 
     socket.on('playerJoined', (data) => {
       setPlayerCount(data.playerCount);
@@ -116,6 +119,11 @@ function App() {
       setAllPlayers(players);
     });
 
+    socket.on('voteLimitReached', (data) => {
+      setVoteMessage(data.message);
+      setTimeout(() => setVoteMessage(''), 2000); // Clear message after 2s
+    });
+
     socket.on('gameReset', (data) => {
       setGrid(data.grid);
       setStats(data.stats);
@@ -124,15 +132,17 @@ function App() {
       setPendingActions([]);
       setTickResults([]);
       setGameOverPlayer(null);
+      setHasVotedThisTick(false);
+      setVoteMessage('');
     });
 
     return () => {
       socket.off('init');
       socket.off('tick');
-      socket.off('actionQueued');
       socket.off('playerJoined');
       socket.off('playerLeft');
       socket.off('playerListUpdate');
+      socket.off('voteLimitReached');
       socket.off('gameReset');
     };
   }, [socket]);
@@ -149,6 +159,13 @@ function App() {
   const handleCellClick = useCallback((x, y, e) => {
     if (!socket || isGameOver) return;
 
+    // Check if already voted this tick
+    if (hasVotedThisTick) {
+      setVoteMessage('⚠️ One vote per tick! Wait for the next tick...');
+      setTimeout(() => setVoteMessage(''), 2000);
+      return;
+    }
+
     const cell = grid[x]?.[y];
     if (!cell || cell.state === 'revealed') return;
 
@@ -162,7 +179,23 @@ function App() {
     }
 
     socket.emit('action', { x, y, type: actionType });
-  }, [socket, grid, isGameOver]);
+    setHasVotedThisTick(true);
+
+    // Show pending action locally (optimistic update)
+    setPendingActions([{
+      playerId: playerInfo?.id,
+      playerName: playerInfo?.name,
+      playerColor: playerInfo?.color,
+      x,
+      y,
+      type: actionType,
+      pendingCount: 1
+    }]);
+
+    // Show confirmation message
+    setVoteMessage('✓ Vote cast! Wait for next tick...');
+    setTimeout(() => setVoteMessage(''), 2000);
+  }, [socket, grid, isGameOver, playerInfo, hasVotedThisTick]);
 
   // Handle reset
   const handleReset = useCallback(() => {
@@ -437,12 +470,19 @@ function App() {
         <div className="instructions">
           <h3>How to Play</h3>
           <ul>
+            <li><strong>One Vote Per Tick:</strong> Choose wisely!</li>
             <li><strong>Left Click:</strong> Vote to reveal a cell</li>
             <li><strong>Right Click / Shift+Click:</strong> Vote to flag/unflag</li>
-            <li><strong>Every 3 seconds:</strong> All votes are counted</li>
-            <li><strong>Majority wins:</strong> Ties are resolved by coin flip</li>
+            <li><strong>Every 3 seconds:</strong> All votes are counted, majority wins</li>
           </ul>
         </div>
+
+        {/* Vote Message */}
+        {voteMessage && (
+          <div className="vote-message">
+            {voteMessage}
+          </div>
+        )}
 
         {/* Last Tick Results */}
         {tickResults.length > 0 && (
