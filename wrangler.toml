@@ -1,0 +1,27 @@
+# minesSwept — one Worker, one SQLite Durable Object, static files on the same Worker.
+# CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID come from the environment at deploy time.
+# No secrets live in this repo.
+
+name = "minesswept"
+main = "src/index.js"
+compatibility_date = "2026-09-30"
+workers_dev = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/ws", "/api/*", "/og.png"]
+
+[[durable_objects.bindings]]
+name = "BOARD"
+class_name = "Board"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Board"]
+
+# One-time: the telep.io zone must already be on this Cloudflare account.
+# The first successful deploy creates the mines.telep.io DNS record.
+[[routes]]
+pattern = "mines.telep.io"
+custom_domain = true

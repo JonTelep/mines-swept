@@ -1,152 +1,91 @@
-# 💣 Mines Swept
+# minesSwept
 
-**A Social Experiment in Collaborative Minesweeper**
+One infinite minesweeper board. Everyone who opens the site is digging in the same dirt, and the holes stay dug.
 
-Everyone plays the same board. Every 3 seconds, the game processes all votes. Majority wins. Ties are resolved by coin flip.
+No accounts. You get a name and a color, you can change the name, and you play. Other people show up as cursors. Their reveals land on your screen while you watch. Hit a mine and you sit in the crater for a few seconds — everyone else keeps going.
 
-## 🎮 How It Works
+Built to be opened from a link and understood in about five seconds. The board is the whole product.
 
-1. **Join the game** — Everyone sees the same 10x10 board
-2. **Vote on actions** — Click to vote "reveal" or right-click to vote "flag"
-3. **Wait for the tick** — Every 3 seconds, all votes are counted
-4. **Majority wins** — The action with the most votes happens
-5. **Ties = coin flip** — If it's 50/50, fate decides
+![Two players on the shared board](docs/board.png)
 
-## 🎯 The Experiment
+## Play
 
-Can a crowd collectively solve minesweeper? Or will chaos prevail?
+| | |
+|---|---|
+| Dig | Click or tap a hidden cell |
+| Flag | Right-click, or press and hold, or toggle Flag |
+| Chord | Tap a number whose flags already match it |
+| Move | Drag, or arrow keys |
+| Zoom | Scroll, pinch, or + / − |
 
-- Will players coordinate?
-- Will trolls try to hit bombs?
-- Will democracy work?
+Untouched ground will not kill you: if you dig a mine that nobody's numbers depend on yet, the mine is pushed somewhere else in that patch and your dig stands. Once a cell is next to opened ground, the numbers are locked and a wrong dig is yours alone. It costs 25 points (you can't go below zero) and an 8 second cooldown. Safe cells are worth 1 point each, cascades included.
 
-## 🚀 Quick Start
+The world runs from −1,000,000 to 1,000,000 on both axes. That is large enough to be endless in practice, and small enough to store.
 
-### Using Docker Compose (Recommended)
+## Run it locally
 
 ```bash
-docker-compose up --build
+make dev
 ```
 
-- Frontend: http://localhost:5000
-- Backend: http://localhost:3000
+Open http://localhost:8787 in two windows. Both are on the same board. State is written to `.wrangler/state` and survives a restart of `wrangler dev`.
 
-### Local Development
-
-**Backend:**
 ```bash
-cd backend
-npm install
-npm run dev
+make test
 ```
 
-**Frontend:**
-```bash
-cd frontend
-npm install
-npm start
-```
+Unit tests cover chunk-and-seed mine generation, flood fill, mine relocation, detonation, chords, and server-side rejection (bounds, flags, cooldown, rate limits). A second test starts `wrangler dev` and connects two WebSocket clients: each sees the other's flag and dig, hidden mine locations are never sent, and a flagged cell is still there after the dev server is killed and started again.
 
-## 🎮 Controls
+## Deploy
 
-| Action | Input |
-|--------|-------|
-| Vote to reveal | Left click |
-| Vote to flag | Right click or Shift+click |
-| Vote to unflag | Right click on flag |
+`make deploy` runs `wrangler deploy`. It expects `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the environment. The repo has no tokens and does not ask for any.
 
-## ⚙️ Game Config
+### One-time setup
 
-Edit `backend/server.js` to change:
+1. Install [Wrangler](https://developers.cloudflare.com/workers/wrangler/) via `npm install` (the Makefile does this).
+2. Create an API token that can edit Workers on the account that owns the `telep.io` zone. Export it as `CLOUDFLARE_API_TOKEN`, and export `CLOUDFLARE_ACCOUNT_ID`.
+3. `wrangler.toml` already contains the custom domain route:
 
-```javascript
-const CONFIG = {
-    gridSize: 10,      // Board size (10x10)
-    bombCount: 15,     // Number of bombs
-    tickInterval: 3000 // Tick every 3 seconds
-};
-```
+   ```toml
+   [[routes]]
+   pattern = "mines.telep.io"
+   custom_domain = true
+   ```
 
-## 🏗️ Architecture
+   The first successful deploy creates the `mines.telep.io` DNS record on that zone. The zone has to be in the same Cloudflare account. If you only want the `*.workers.dev` hostname first, comment those three lines out, deploy, then put them back.
+4. Open https://mines.telep.io. Share cards are generated at `/og.png`. Live totals are at `/api/stats`.
 
-```
-┌─────────────────┐     WebSocket      ┌─────────────────┐
-│                 │ ◄─────────────────► │                 │
-│   React Client  │                     │  Node.js Server │
-│                 │ ◄─────────────────► │                 │
-└─────────────────┘     Socket.IO       └─────────────────┘
-                                               │
-                                               ▼
-                                        ┌─────────────┐
-                                        │  Game State │
-                                        │  + Actions  │
-                                        │   Queue     │
-                                        └─────────────┘
-                                               │
-                                    Every 3 seconds (tick)
-                                               │
-                                               ▼
-                                        ┌─────────────┐
-                                        │  Process    │
-                                        │   Votes     │
-                                        │  Majority   │
-                                        │   Wins      │
-                                        └─────────────┘
-```
+Deploys restart the Durable Object and disconnect open sockets. SQLite state (every revealed cell, flag, and score) stays.
 
-## 📡 Socket Events
+## Architecture
 
-### Client → Server
-- `action` — Queue an action: `{ x, y, type: 'reveal'|'flag'|'unflag' }`
-- `resetGame` — Start a new game
+One Cloudflare Worker serves the static client and routes `/ws`, `/api/*`, and `/og.png` to a single SQLite-backed Durable Object named `world`.
 
-### Server → Client
-- `init` — Initial game state and player info
-- `tick` — Tick results with updated grid
-- `actionQueued` — Someone queued an action (for visual feedback)
-- `playerJoined` / `playerLeft` — Player count updates
-- `gameReset` — New game started
+Mines are not stored. A world seed plus the cell coordinate decides them, so the board can be enormous without writing the unrevealed field. Overrides (a relocated mine, or a mine planted to stop a runaway flood) and opened cells live in SQLite. Clients only ever receive cells that are already revealed or flagged.
 
-## 🔧 API Endpoints
+Presence uses the WebSocket Hibernation API. The object sleeps between messages, which is what keeps the daily duration quota intact. Cursors are throttled and only forwarded to people looking at that patch. A dig is applied on the object, saved, and broadcast. There is one object on purpose: a shared board needs one authority, and one hibernating object can hold the sockets for a few hundred players. Splitting the field would make floods and the scoreboard lie.
 
-- `GET /status` — Game status and stats
-- `GET /grid` — Current public grid state
+## Free plan
 
-## 📁 Project Structure
+Durable Objects with the SQLite backend are included on the Workers Free plan. The paid plan is not required to deploy or to run a normal launch. Figures below are from Cloudflare's pricing and limits docs as of 30 Sep 2026.
 
-```
-mines-swept/
-├── backend/
-│   ├── server.js      # Game logic + WebSocket server
-│   ├── package.json
-│   └── Dockerfile
-├── frontend/
-│   ├── App.js         # React UI
-│   ├── App.css        # Styling
-│   ├── index.js       # Entry point
-│   ├── package.json
-│   └── Dockerfile
-├── docker-compose.yml
-└── README.md
-```
+| Limit | Free allowance | What this game does |
+|---|---|---|
+| Worker requests | 100,000 / day | Static files are unlimited and do not count. The Worker runs for the WebSocket upgrade, `/api/stats`, and `/og.png`. |
+| Worker CPU | 10 ms / request | The Worker only forwards. Game work runs in the Durable Object. |
+| Durable Object requests | 100,000 / day | Incoming WebSocket messages are billed 20:1, so 2,000,000 incoming messages fit. Outgoing broadcasts are free. A connection setup counts as one request. |
+| Durable Object duration | 13,000 GB-s / day | Hibernation means duration accrues only while a message is handled, not while people sit connected. |
+| Durable Object CPU | 30 s / invocation by default | A single dig is capped at 400 cells. |
+| SQLite rows read | 5 million / day | Viewport reads and per-cell lookups. |
+| SQLite rows written | 100,000 / day | One row per revealed or flagged cell, plus the player and counter updates. This is the tight quota. |
+| SQLite stored | 5 GB / account, 1 GB / object | Only opened cells and mine overrides. A million opened cells is still megabytes. |
 
-## 🎲 Conflict Resolution
+Past a free-tier cap, that class of operation fails until 00:00 UTC. The client reconnects and the board is still there.
 
-When multiple players vote on the same cell:
+A rough fit: 80 people, each sending a cursor every couple of seconds and digging every few seconds, is on the order of 10,000 billed Durable Object requests per hour. A few hours of a popular post fits. A crowd of a couple hundred, panning hard all day, can spend the daily request budget. The $5 Workers Paid plan raises the ceiling (1 million Durable Object requests included per month, then $0.15 per million) and is not part of this deploy.
 
-1. **Count votes** for each action type (reveal, flag, unflag)
-2. **Majority wins** — The action with the most votes is executed
-3. **Tie breaker** — If equal votes, a random coin flip decides
+Per connection the server allows a handful of digs per second, a cell budget that refills, and at most 8 sockets from one IP. The object stops accepting new sockets around 500.
 
-Example:
-- 3 players vote "reveal" on cell [2,3]
-- 2 players vote "flag" on cell [2,3]
-- Result: Cell is revealed (3 > 2)
+## License
 
-## 📜 License
-
-GPL-3.0 — See LICENSE file
-
----
-
-Built by [Telep IO](https://telep.io) as a social experiment 🧪
+GPL-3.0. See [LICENSE](LICENSE).
