@@ -92,9 +92,15 @@ function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
+function contentFrame() {
+  return { top: 96, bottom: 80, left: 20, right: 20 };
+}
+
 function fitZoom() {
-  const pad = 36;
-  return Math.max(0.05, Math.min((cssW - pad) / boardSize, (cssH - pad) / boardSize));
+  const frame = contentFrame();
+  const availW = Math.max(80, cssW - frame.left - frame.right);
+  const availH = Math.max(80, cssH - frame.top - frame.bottom);
+  return Math.max(0.05, Math.min(availW / boardSize, availH / boardSize));
 }
 
 function minZoom() {
@@ -122,19 +128,36 @@ function useSize(n) {
   scheduleView();
 }
 
+function viewCenter(z) {
+  const frame = contentFrame();
+  const zoom = Math.max(z, 0.05);
+  const midX = frame.left + (cssW - frame.left - frame.right) / 2;
+  const midY = frame.top + (cssH - frame.top - frame.bottom) / 2;
+  return {
+    x: boardSize / 2 - (midX - cssW / 2) / zoom,
+    y: boardSize / 2 - (midY - cssH / 2) / zoom,
+  };
+}
+
 function clampCamera(c) {
-  const halfW = cssW / 2 / c.z;
-  const halfH = cssH / 2 / c.z;
-  if (halfW * 2 >= boardSize) c.x = boardSize / 2;
-  else c.x = clamp(c.x, halfW, boardSize - halfW);
-  if (halfH * 2 >= boardSize) c.y = boardSize / 2;
-  else c.y = clamp(c.y, halfH, boardSize - halfH);
+  const zoom = Math.max(c.z, 0.05);
+  const halfW = cssW / 2 / zoom;
+  const halfH = cssH / 2 / zoom;
+  const margin = 64 / zoom;
+  const minX = halfW - margin;
+  const maxX = boardSize - halfW + margin;
+  const minY = halfH - margin;
+  const maxY = boardSize - halfH + margin;
+  const center = viewCenter(zoom);
+  c.x = minX >= maxX ? center.x : clamp(c.x, minX, maxX);
+  c.y = minY >= maxY ? center.y : clamp(c.y, minY, maxY);
 }
 
 function fitBoard() {
-  goal.x = boardSize / 2;
-  goal.y = boardSize / 2;
   goal.z = fitZoom();
+  const center = viewCenter(goal.z);
+  goal.x = center.x;
+  goal.y = center.y;
   clampCamera(goal);
 }
 
@@ -399,10 +422,10 @@ function onMsg(msg) {
     return;
   }
   if (msg.t === "no") {
+    if (msg.reason === "bounds") return;
     const lines = {
       cooldown: "You're in the crater. Give it a second.",
       rate: "Easy — the field can only take so much at once.",
-      bounds: "That's off the map.",
       flagged: "Unflag it first.",
       chord: "Those flags don't add up.",
       revealed: "Already open.",
@@ -873,10 +896,7 @@ function burst(x, y, color) {
 
 function dig(x, y) {
   dismissHint();
-  if (!inBoard(x, y)) {
-    toast("That's off the map.");
-    return;
-  }
+  if (!inBoard(x, y)) return;
   if (flagMode) {
     send({ t: "flag", x, y });
     flagSound();
@@ -888,10 +908,7 @@ function dig(x, y) {
 
 function flag(x, y) {
   dismissHint();
-  if (!inBoard(x, y)) {
-    toast("That's off the map.");
-    return;
-  }
+  if (!inBoard(x, y)) return;
   send({ t: "flag", x, y });
   flagSound();
 }
@@ -920,6 +937,8 @@ function easeCam() {
   cam.x += dx * 0.28;
   cam.y += dy * 0.28;
   cam.z += dz * 0.28;
+  clampCamera(cam);
+  clampCamera(goal);
   easeCam.live = true;
   if (usesOverview() !== wasFar) {
     lastView = "";
@@ -930,8 +949,8 @@ function easeCam() {
 function drawBoardEdge() {
   const [sx, sy] = worldToScreen(0, 0);
   const span = boardSize * cam.z;
-  ctx.strokeStyle = "rgba(228, 177, 90, 0.92)";
-  ctx.lineWidth = usesOverview() ? 2 : 3;
+  ctx.strokeStyle = "rgba(228, 177, 90, 0.4)";
+  ctx.lineWidth = 1;
   ctx.strokeRect(sx + 0.5, sy + 0.5, Math.max(1, span - 1), Math.max(1, span - 1));
 }
 
@@ -1011,6 +1030,12 @@ function draw() {
   if (far) {
     drawOverview();
   } else {
+    const [bx, by] = worldToScreen(0, 0);
+    const span = boardSize * cam.z;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(bx, by, span, span);
+    ctx.clip();
     const v = viewRect();
     const gutter = cam.z > 22 ? 1.5 : 0;
     const x0 = Math.max(0, v.x0);
@@ -1030,8 +1055,6 @@ function draw() {
         drawCell(sx, sy, cam.z - gutter, x, y, cell, now);
       }
     }
-    drawBoardEdge();
-
     if (hover && inBoard(hover[0], hover[1]) && !press?.moved) {
       const [sx, sy] = worldToScreen(hover[0], hover[1]);
       ctx.strokeStyle = "rgba(228, 177, 90, 0.9)";
@@ -1057,6 +1080,8 @@ function draw() {
       if (!inBoard(c.x, c.y)) continue;
       drawCursor(c);
     }
+    ctx.restore();
+    drawBoardEdge();
   }
 
   for (let i = particles.length - 1; i >= 0; i--) {
@@ -1075,7 +1100,7 @@ function draw() {
   }
 
   const center = cellAt(cssW / 2, cssH / 2);
-  const coord = inBoard(center[0], center[1]) ? `${center[0]}, ${center[1]}` : "off the board";
+  const coord = inBoard(center[0], center[1]) ? `${center[0]}, ${center[1]}` : "";
   if (coord !== draw.coord) {
     draw.coord = coord;
     $("coords").textContent = coord;
@@ -1242,11 +1267,10 @@ canvas.addEventListener("pointerdown", (e) => {
   }
   if (press?.middle) return;
   if (e.button === 2) {
+    const cell = cellAt(px, py);
+    if (!inBoard(cell[0], cell[1])) return;
     if (usesOverview()) zoomInto(px, py);
-    else {
-      const cell = cellAt(px, py);
-      flag(cell[0], cell[1]);
-    }
+    else flag(cell[0], cell[1]);
     return;
   }
   if (e.button !== 0) return;
@@ -1308,6 +1332,7 @@ canvas.addEventListener("pointerup", (e) => {
   const py = press.y;
   press = null;
   if (moved || pointers.size > 0) return;
+  if (!inBoard(cell[0], cell[1])) return;
   if (usesOverview()) {
     zoomInto(px, py);
     return;
