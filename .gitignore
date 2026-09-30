@@ -8,6 +8,10 @@ yarn-error.log
 .env
 .env.local
 .env.*.local
+.dev.vars
+
+# Wrangler local state
+.wrangler/
 
 # Build output
 dist/

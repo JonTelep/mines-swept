@@ -1,5 +1,14 @@
 {
+  "name": "minesswept",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "dev": "wrangler dev --port 8787 --ip 0.0.0.0 --show-interactive-dev-session=false",
+    "deploy": "wrangler deploy",
+    "test": "node --test --test-timeout 180000 test/game.test.js test/multiplayer.test.js"
+  },
   "devDependencies": {
-    "nodemon": "^3.1.9"
+    "wrangler": "^4.40.0"
   }
 }
