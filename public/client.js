@@ -1209,6 +1209,12 @@ function localPoint(e) {
 }
 
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("mousedown", (e) => {
+  if (e.button === 1) e.preventDefault();
+});
+canvas.addEventListener("auxclick", (e) => {
+  if (e.button === 1) e.preventDefault();
+});
 
 let digTimer = 0;
 let lastTap = { t: 0, x: 0, y: 0 };
@@ -1218,6 +1224,7 @@ function zoomInto(px, py) {
 }
 
 canvas.addEventListener("pointerdown", (e) => {
+  if (e.button === 1) e.preventDefault();
   canvas.setPointerCapture(e.pointerId);
   const [px, py] = localPoint(e);
   pointers.set(e.pointerId, { x: px, y: py });
@@ -1228,6 +1235,12 @@ canvas.addEventListener("pointerdown", (e) => {
     clearTimeout(digTimer);
     return;
   }
+  if (e.button === 1) {
+    clearTimeout(digTimer);
+    press = { x: px, y: py, cell: cellAt(px, py), t: performance.now(), moved: false, hold: false, id: e.pointerId, middle: true };
+    return;
+  }
+  if (press?.middle) return;
   if (e.button === 2) {
     if (usesOverview()) zoomInto(px, py);
     else {
@@ -1241,6 +1254,7 @@ canvas.addEventListener("pointerdown", (e) => {
 });
 
 canvas.addEventListener("pointermove", (e) => {
+  if ((e.buttons & 4) || press?.middle) e.preventDefault();
   const [px, py] = localPoint(e);
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: px, y: py });
   hover = cellAt(px, py);
@@ -1282,6 +1296,11 @@ canvas.addEventListener("pointerup", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   if (!press || press.id !== e.pointerId) return;
+  if (press.middle || e.button === 1) {
+    if (e.button === 1) press = null;
+    return;
+  }
+  if (e.button !== 0) return;
   const held = performance.now() - press.t;
   const cell = press.cell;
   const moved = press.moved;

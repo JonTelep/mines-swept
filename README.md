@@ -15,7 +15,7 @@ Built to be opened from a link and understood in about five seconds.
 | Dig | Click or tap a hidden cell |
 | Flag | Right-click, or press and hold, or toggle Flag |
 | Chord | Tap a number whose flags already match it |
-| Move | Drag, or arrow keys |
+| Move | Drag, middle-drag, or arrow keys |
 | Zoom | Scroll, pinch, + / −, or double-click / double-tap a spot |
 | Whole board | Board button, or the minimap |
 
