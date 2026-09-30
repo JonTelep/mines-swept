@@ -49,65 +49,69 @@ test("chunk generation is deterministic for a seed and changes with chunk or see
   assert.notEqual(chunkChecksum(SEED, 0, 0), chunkChecksum(SEED, 1, 0));
   assert.notEqual(chunkChecksum(SEED, 0, 0), chunkChecksum(SEED + 1, 0, 0));
 
-  const chunk = minesInChunk(SEED, -1, 2);
-  for (const [x, y] of chunk) {
-    assert.equal(Math.floor(x / CHUNK), -1);
-    assert.equal(Math.floor(y / CHUNK), 2);
-    assert.equal(deterministicMine(SEED, x, y), true);
+  assert.equal(minesInChunk(SEED, -1, 2).length, 0);
+  assert.equal(deterministicMine(SEED, -1, 0), false);
+  assert.equal(inBounds(0, 0), true);
+  assert.equal(inBounds(999, 999), true);
+  assert.equal(inBounds(1000, 0), false);
+  const edge = minesInChunk(SEED, 31, 0);
+  assert.ok(edge.length > 0);
+  for (const [x, y] of edge) {
+    assert.ok(x >= 992 && x < 1000);
+    assert.ok(y >= 0 && y < 32);
   }
-  assert.equal(deterministicMine(SEED, 0, 0), deterministicMine(SEED, 0, 0));
 });
 
 test("flood fill opens a safe pocket and stops on numbers", () => {
   const field = createMemoryField(SEED);
-  paint(field, -4, -4, 4, 4, true);
-  paint(field, -1, -1, 1, 1, false);
-  const result = dig(field, 0, 0);
+  paint(field, 26, 26, 34, 34, true);
+  paint(field, 29, 29, 31, 31, false);
+  const result = dig(field, 30, 30);
   assert.equal(result.error, undefined);
   assert.equal(result.booms.length, 0);
   assert.equal(result.cells.length, 9);
-  const center = result.cells.find((c) => c.x === 0 && c.y === 0);
+  const center = result.cells.find((c) => c.x === 30 && c.y === 30);
   assert.equal(center.n, 0);
-  const corner = result.cells.find((c) => c.x === 1 && c.y === 1);
+  const corner = result.cells.find((c) => c.x === 31 && c.y === 31);
   assert.ok(corner.n > 0);
-  assert.equal(field.isRevealed(2, 2), false);
+  assert.equal(field.isRevealed(32, 32), false);
   consistent(field);
 });
 
 test("a frontier mine detonates only that cell and does not flood", () => {
   const field = createMemoryField(SEED);
-  paint(field, -3, -3, 3, 3, false);
-  field.setOverride(0, 0, true);
-  const opened = dig(field, 1, 0);
+  paint(field, 27, 27, 33, 33, false);
+  field.setOverride(30, 30, true);
+  const opened = dig(field, 31, 30);
   assert.equal(opened.booms.length, 0);
-  assert.equal(field.isRevealed(1, 0), true);
-  assert.equal(field.numberAt(1, 0), 1);
-  const boom = dig(field, 0, 0);
+  assert.equal(field.isRevealed(31, 30), true);
+  assert.equal(field.numberAt(31, 30), 1);
+  const boom = dig(field, 30, 30);
   assert.equal(boom.booms.length, 1);
-  assert.deepEqual(boom.booms[0], { x: 0, y: 0 });
+  assert.deepEqual(boom.booms[0], { x: 30, y: 30 });
   assert.equal(boom.cells.length, 0);
-  assert.equal(field.isBoom(0, 0), true);
+  assert.equal(field.isBoom(30, 30), true);
   assert.equal(boom.relocated, null);
   consistent(field);
 });
 
 test("a mine in untouched ground is moved instead of killing the digger", () => {
   const field = createMemoryField(1);
-  paint(field, -6, -6, 6, 6, false);
-  field.setOverride(0, 0, true);
-  const result = dig(field, 0, 0, { max: 80 });
+  paint(field, 24, 24, 36, 36, false);
+  field.setOverride(30, 30, true);
+  const result = dig(field, 30, 30, { max: 80 });
   assert.equal(result.booms.length, 0);
-  assert.equal(field.isMine(0, 0), false);
+  assert.equal(field.isMine(30, 30), false);
   assert.ok(result.relocated);
   assert.equal(field.isMine(result.relocated.toX, result.relocated.toY), true);
-  assert.equal(field.isRevealed(0, 0), true);
+  assert.equal(field.isRevealed(30, 30), true);
   consistent(field);
 });
 
 test("capping a huge opening seals it without lying about numbers", () => {
   const field = createMemoryField(7);
-  paint(field, -12, -12, 12, 12, false);
-  const result = dig(field, 0, 0, { max: 25 });
+  paint(field, 18, 18, 42, 42, false);
+  const result = dig(field, 30, 30, { max: 25 });
   assert.ok(result.capped);
   assert.ok(result.cells.length <= 25);
   assert.ok(result.cells.length >= 1);
@@ -116,41 +120,43 @@ test("capping a huge opening seals it without lying about numbers", () => {
 
 test("flags block reveals, and a correct chord opens while a wrong one booms", () => {
   const field = createMemoryField(3);
-  paint(field, -3, -3, 3, 3, false);
-  field.setOverride(0, 0, true);
+  paint(field, 27, 27, 33, 33, false);
+  field.setOverride(30, 30, true);
 
-  toggleFlag(field, 0, 0);
-  const blocked = dig(field, 0, 0);
+  toggleFlag(field, 30, 30);
+  const blocked = dig(field, 30, 30);
   assert.equal(blocked.error, "flagged");
-  assert.equal(field.isBoom(0, 0), false);
+  assert.equal(field.isBoom(30, 30), false);
 
-  const edge = dig(field, 1, 0);
+  const edge = dig(field, 31, 30);
   assert.equal(edge.booms.length, 0);
-  assert.equal(field.numberAt(1, 0), 1);
-  const flagged = toggleFlag(field, 1, 0);
+  assert.equal(field.numberAt(31, 30), 1);
+  const flagged = toggleFlag(field, 31, 30);
   assert.equal(flagged.error, "revealed");
 
-  const chord = dig(field, 1, 0);
+  const chord = dig(field, 31, 30);
   assert.equal(chord.chord, true);
   assert.equal(chord.booms.length, 0);
   assert.ok(chord.cells.length > 0);
   consistent(field);
 
   const field2 = createMemoryField(3);
-  paint(field2, -3, -3, 3, 3, false);
-  field2.setOverride(0, 0, true);
-  dig(field2, 1, 0);
-  toggleFlag(field2, 2, 0);
-  const wrong = dig(field2, 1, 0);
-  assert.ok(wrong.booms.some((b) => b.x === 0 && b.y === 0));
+  paint(field2, 27, 27, 33, 33, false);
+  field2.setOverride(30, 30, true);
+  dig(field2, 31, 30);
+  toggleFlag(field2, 32, 30);
+  const wrong = dig(field2, 31, 30);
+  assert.ok(wrong.booms.some((b) => b.x === 30 && b.y === 30));
   consistent(field2);
 });
 
 test("server-side validation rejects bad coords, cooldown, and rate limits before the board changes", () => {
   const field = createMemoryField(9);
   assert.equal(dig(field, 1.5, 0).error, "bounds");
-  assert.equal(dig(field, 1_000_001, 0).error, "bounds");
-  assert.equal(inBounds(-1_000_000, 1_000_000), true);
+  assert.equal(dig(field, -1, 0).error, "bounds");
+  assert.equal(dig(field, 1000, 0).error, "bounds");
+  assert.equal(inBounds(0, 999), true);
+  assert.equal(inBounds(-1, 0), false);
   assert.equal(toggleFlag(field, 4_000_000, 0).error, "bounds");
 
   const cooling = freshPlayer(0);
@@ -176,14 +182,14 @@ test("server-side validation rejects bad coords, cooldown, and rate limits befor
 
 test("a frontier mine booms that cell and does not start a personal cooldown", () => {
   const field = createMemoryField(5);
-  paint(field, -2, -2, 2, 2, false);
-  field.setOverride(0, 0, true);
+  paint(field, 28, 28, 32, 32, false);
+  field.setOverride(30, 30, true);
   const player = freshPlayer(0);
-  const opened = attemptDig(field, player, 1, 0, 0);
+  const opened = attemptDig(field, player, 31, 30, 0);
   assert.equal(opened.booms.length, 0);
   assert.equal(player.score, opened.cells.length);
   const before = player.score;
-  const boom = attemptDig(field, player, 0, 0, 10);
+  const boom = attemptDig(field, player, 30, 30, 10);
   assert.equal(boom.booms.length, 1);
   assert.equal(player.score, before);
   assert.equal(player.booms, 1);
@@ -194,15 +200,15 @@ test("a frontier mine booms that cell and does not start a personal cooldown", (
 
 test("a spared dig moves a frontier mine instead of blowing the round", () => {
   const field = createMemoryField(5);
-  paint(field, -2, -2, 2, 2, false);
-  field.setOverride(0, 0, true);
+  paint(field, 28, 28, 32, 32, false);
+  field.setOverride(30, 30, true);
   const player = freshPlayer(0);
-  attemptDig(field, player, 1, 0, 0);
-  const spared = attemptDig(field, player, 0, 0, 10, { spare: true, spareReason: "grace" });
+  attemptDig(field, player, 31, 30, 0);
+  const spared = attemptDig(field, player, 30, 30, 10, { spare: true, spareReason: "grace" });
   assert.equal(spared.booms.length, 0);
   assert.equal(spared.spared, "grace");
-  assert.equal(field.isMine(0, 0), false);
-  assert.equal(field.isRevealed(0, 0), true);
+  assert.equal(field.isMine(30, 30), false);
+  assert.equal(field.isRevealed(30, 30), true);
   assert.equal(player.booms, 0);
   consistent(field);
 });

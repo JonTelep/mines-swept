@@ -55,7 +55,7 @@ button, input {
   z-index: 1;
 }
 
-.top, .ticket, .notes, .chat, .dock, .hint, .toast, .over {
+.top, .ticket, .notes, .chat, .dock, .hint, .toast, .over, #mini {
   position: fixed;
   z-index: 2;
 }
@@ -344,19 +344,28 @@ h2 {
   color: #d9c7a4;
 }
 
-#shame {
+#shame,
+#fame {
   list-style: none;
   margin: 6px 0 0;
   padding: 0;
 }
 
-#shame li {
+#shame li,
+#fame li {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 6px;
   padding: 3px 0;
   font-size: 0.82rem;
   border-bottom: 1px solid rgba(234, 215, 180, 0.08);
+}
+
+.fame-empty {
+  margin: 6px 0 0;
+  font-style: italic;
+  color: #b5a48a;
+  font-size: 0.82rem;
 }
 
 .survived {
@@ -366,6 +375,30 @@ h2 {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--brass);
+}
+
+.progress-track {
+  margin: 6px auto 0;
+  width: min(280px, 72vw);
+  height: 6px;
+  background: rgba(234, 215, 180, 0.14);
+  border: 1px solid rgba(228, 177, 90, 0.4);
+}
+
+.progress-track span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--moss), var(--brass));
+}
+
+.progress-label {
+  margin: 3px 0 0;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #d9c7a4;
 }
 
 .chat {
@@ -497,6 +530,57 @@ h2 {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--brass);
+}
+
+.over.win {
+  background:
+    radial-gradient(ellipse at center, rgba(142, 174, 120, 0.4), transparent 72%),
+    rgba(12, 10, 6, 0.92);
+  border-color: rgba(228, 177, 90, 0.85);
+  box-shadow: 0 18px 70px rgba(0, 0, 0, 0.55), 0 0 56px rgba(142, 174, 120, 0.38);
+}
+
+.over.win .over-kicker { color: var(--moss); }
+
+#over-tops {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  width: min(22rem, 100%);
+}
+
+#over-tops:empty { display: none; }
+
+#over-tops li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid rgba(234, 215, 180, 0.12);
+}
+
+#mini {
+  right: 16px;
+  bottom: calc(72px + var(--safe-bot));
+  z-index: 3;
+  width: 104px;
+  height: 104px;
+  background: #0c0907;
+  border: 1px solid var(--line);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  touch-action: none;
+}
+
+body.far .veil {
+  background: repeating-linear-gradient(0deg, rgba(255, 236, 200, 0.012) 0 1px, transparent 1px 4px);
+}
+
+body.winflash .veil {
+  background: radial-gradient(ellipse at center, rgba(228, 177, 90, 0.38), transparent 62%);
 }
 
 .dock {
@@ -661,7 +745,20 @@ body.boom .veil {
   }
 
   .hint { bottom: calc(128px + var(--safe-bot)); font-size: 0.92rem; }
-  .top { left: 16px; transform: none; text-align: left; }
+  .top {
+    left: 16px;
+    transform: none;
+    text-align: left;
+    max-width: calc(100% - 108px);
+  }
+  .progress-track { margin-left: 0; width: min(220px, 58vw); }
+  #mini {
+    top: calc(14px + var(--safe-top));
+    right: 10px;
+    bottom: auto;
+    width: 76px;
+    height: 76px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

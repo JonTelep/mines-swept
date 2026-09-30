@@ -1,11 +1,22 @@
-// Pure minesweeper rules for one shared infinite board.
+// Pure minesweeper rules for one shared finite board.
 // Mines come from a seed unless a persisted override says otherwise.
 // Nothing in this file touches the network or storage.
 
 export const CHUNK = 32;
-export const WORLD = 1_000_000;
-// 17.5% — expert-ish, so openings stay fun without continent-sized floods.
+export const BOARD = 1000;
+// 17.5% — same density as the old open field. On 1,000×1,000 that is
+// about 175,000 mines, expert-ish, without turning the clear into a bigger write.
 export const MINE_PER_10K = 1750;
+let activeSize = BOARD;
+
+export function setActiveSize(n) {
+  const size = n | 0;
+  if (size >= 8 && size <= BOARD) activeSize = size;
+}
+
+export function boardSpan() {
+  return activeSize;
+}
 export const DEFAULT_FLOOD_MAX = 400;
 export const BOOM_PENALTY = 25;
 export const COOLDOWN_MS = 8000;
@@ -20,7 +31,7 @@ export function key(x, y) {
 }
 
 export function inBounds(x, y) {
-  return Number.isInteger(x) && Number.isInteger(y) && Math.abs(x) <= WORLD && Math.abs(y) <= WORLD;
+  return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < activeSize && y < activeSize;
 }
 
 export function neighbors(x, y) {
