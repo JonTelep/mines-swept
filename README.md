@@ -27,12 +27,6 @@ The round is also won, by everyone still there, when every safe cell is open. Th
 
 Zoom out far enough and the field draws as an overview: revealed ground, flags, the blast, and live players, at about one pixel a cell or less. The server keeps an 8×8 summary and sends only the bins that changed, so a frame is never a million cells. Zoom back in and the cells are the same as before. The minimap stays on screen. A tap on the overview zooms toward that spot instead of digging.
 
-![The whole board, zoomed out](docs/board-whole.png)
-
-![The same view on a phone](docs/board-whole-phone.png)
-
-![Zoomed into one spot](docs/zoomed.png)
-
 A round cannot be thrown in its first 20 seconds. During that grace, a frontier mine is moved instead of detonating. The player who just ended a round also cannot end the next one: their frontier mines are moved, and the field tells them this one isn't theirs to blow. One person cannot reset the game forever. Someone else has to do it. A win clears that block, so the next round is open to everyone. History lasts.
 
 Chat is one room on the same connection. The last hundred messages are kept for people who arrive late. Game-over lines are posted there automatically. One message every two seconds, 200 characters, plain text (a URL shows up as text and is not a link). A short server-side list rejects racial slurs, including spacing, leetspeak, repeated letters, and symbol swaps. Ordinary swearing is fine. The sender sees "Message not sent" and nobody else sees it. The same check applies to display names. The list itself is not printed here.
