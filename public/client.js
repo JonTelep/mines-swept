@@ -189,8 +189,14 @@ function onMsg(msg) {
     if (msg.event) paintFeed(msg.event);
     if (msg.stats) paintHud(msg.stats);
     if (msg.leaderboard) paintLeaders(msg.leaderboard);
-    if (msg.event?.type === "boom") punch();
-    if (msg.event?.type === "clear" && msg.event.n > 12) blip(640, 0.08, "sine", 0.03);
+    if (msg.event?.type === "boom") {
+      const own = msg.event.id ? msg.event.id === me.id : msg.event.name === me.name;
+      if (own || cellInView(msg.event.x, msg.event.y)) {
+        punch();
+        boom(own);
+      }
+    }
+    if (msg.event?.type === "clear" && msg.event.n > 12) chime();
     return;
   }
   if (msg.t === "you") {
@@ -199,7 +205,6 @@ function onMsg(msg) {
     localStorage.setItem("minesswept.name", me.name);
     paintYou();
     if (msg.cooldownUntil > Date.now() && msg.cooldownUntil !== wasCool) {
-      blip(90, 0.28, "triangle", 0.07);
       toast("Mine. The rest of the field keeps going.");
       $("live").textContent = "You hit a mine. Short cooldown.";
     }
@@ -345,24 +350,96 @@ function punch() {
   setTimeout(() => document.body.classList.remove("boom"), 280);
 }
 
-function blip(freq, dur, type, vol) {
+function cellInView(x, y) {
+  if (x == null || y == null) return false;
+  const v = viewRect();
+  return x >= v.x0 - 1 && x <= v.x1 + 1 && y >= v.y0 - 1 && y <= v.y1 + 1;
+}
+
+function primeAudio() {
   if (!audioOn) return;
   try {
     if (!actx) actx = new AudioContext();
-    if (actx.state === "suspended") actx.resume();
-    const o = actx.createOscillator();
-    const g = actx.createGain();
-    o.type = type;
-    o.frequency.value = freq;
-    g.gain.setValueAtTime(vol, actx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
-    o.connect(g);
-    g.connect(actx.destination);
-    o.start();
-    o.stop(actx.currentTime + dur);
+    if (actx.state !== "running") actx.resume();
+  } catch {
+    /* no audio device */
+  }
+}
+
+function play(fn) {
+  if (!audioOn) return;
+  try {
+    if (!actx) actx = new AudioContext();
+    const run = () => {
+      if (!actx || actx.state !== "running") return;
+      try { fn(actx); } catch { /* a node failed to start */ }
+    };
+    if (actx.state === "running") run();
+    else actx.resume().then(run).catch(() => {});
   } catch {
     /* autoplay or missing audio */
   }
+}
+
+function tone(ctx, { type, freq, end, dur, vol }) {
+  const t = ctx.currentTime;
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t);
+  if (end) o.frequency.exponentialRampToValueAtTime(end, t + dur);
+  g.gain.setValueAtTime(Math.max(vol, 0.0001), t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g);
+  g.connect(ctx.destination);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+function crack(ctx, dur, vol) {
+  const t = ctx.currentTime;
+  const length = Math.max(1, Math.floor(ctx.sampleRate * dur));
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i++) {
+    const env = 1 - i / length;
+    data[i] = (Math.random() * 2 - 1) * env * env;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(900, t);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(Math.max(vol, 0.0001), t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  src.connect(filter);
+  filter.connect(g);
+  g.connect(ctx.destination);
+  src.start(t);
+}
+
+function digSound() {
+  play((ctx) => tone(ctx, { type: "triangle", freq: 740, end: 460, dur: 0.09, vol: 0.18 }));
+}
+
+function flagSound() {
+  play((ctx) => tone(ctx, { type: "square", freq: 420, end: 280, dur: 0.07, vol: 0.1 }));
+}
+
+function chime() {
+  play((ctx) => {
+    tone(ctx, { type: "sine", freq: 520, end: 780, dur: 0.12, vol: 0.12 });
+  });
+}
+
+function boom(own) {
+  play((ctx) => {
+    const body = own ? 0.55 : 0.28;
+    tone(ctx, { type: "sine", freq: own ? 160 : 120, end: 38, dur: own ? 0.55 : 0.4, vol: body });
+    tone(ctx, { type: "square", freq: 70, dur: 0.08, vol: own ? 0.14 : 0.07 });
+    crack(ctx, own ? 0.28 : 0.18, own ? 0.42 : 0.2);
+  });
 }
 
 function burst(x, y, color) {
@@ -385,17 +462,17 @@ function dig(x, y) {
   dismissHint();
   if (flagMode) {
     send({ t: "flag", x, y });
-    blip(360, 0.04, "square", 0.02);
+    flagSound();
     return;
   }
   send({ t: "reveal", x, y });
-  blip(520, 0.05, "sine", 0.035);
+  digSound();
 }
 
 function flag(x, y) {
   dismissHint();
   send({ t: "flag", x, y });
-  blip(360, 0.04, "square", 0.02);
+  flagSound();
 }
 
 function dismissHint() {
@@ -706,7 +783,11 @@ addEventListener("keydown", (e) => {
   else if (e.key === "f") toggleFlagMode();
   else if (e.key === "+" || e.key === "=") zoomAt(cssW / 2, cssH / 2, clamp(cam.z * 1.12, minZoom(), 78));
   else if (e.key === "-" || e.key === "_") zoomAt(cssW / 2, cssH / 2, clamp(cam.z / 1.12, minZoom(), 78));
-  else if (e.key === "Escape") $("notes").classList.remove("open");
+  else if (e.key === "Escape") {
+    setLeaderboard(false);
+    e.preventDefault();
+    return;
+  }
   else return;
   scheduleView();
   e.preventDefault();
@@ -726,15 +807,30 @@ $("origin").addEventListener("click", () => {
   cam.y = 0.5;
   scheduleView();
 });
-$("notes-toggle").addEventListener("click", () => $("notes").classList.toggle("open"));
-$("close-notes").addEventListener("click", () => $("notes").classList.remove("open"));
+function setLeaderboard(open) {
+  $("notes").classList.toggle("open", open);
+  $("notes").classList.toggle("shut", !open);
+  const btn = $("notes-toggle");
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.setAttribute("aria-pressed", open ? "true" : "false");
+}
+
+setLeaderboard(!matchMedia("(max-width: 800px)").matches);
+$("notes-toggle").addEventListener("click", () => setLeaderboard(!$("notes").classList.contains("open")));
+$("close-notes").addEventListener("click", () => setLeaderboard(false));
+
+addEventListener("pointerdown", () => primeAudio(), true);
+addEventListener("keydown", () => primeAudio(), true);
 
 $("sound").setAttribute("aria-pressed", audioOn ? "true" : "false");
 $("sound").addEventListener("click", () => {
   audioOn = !audioOn;
   localStorage.setItem("minesswept.sound", audioOn ? "1" : "0");
   $("sound").setAttribute("aria-pressed", audioOn ? "true" : "false");
-  if (audioOn) blip(520, 0.06, "sine", 0.04);
+  if (audioOn) {
+    primeAudio();
+    digSound();
+  }
 });
 
 $("share").addEventListener("click", async () => {

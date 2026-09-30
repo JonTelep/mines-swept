@@ -251,7 +251,7 @@ export class Board {
         score: row.score | 0,
         clears: row.clears | 0,
         booms: row.booms | 0,
-        cooldownUntil: row.cool | 0,
+        cooldownUntil: stamp(row.cool),
         revealStamps: [],
         flagStamps: [],
         cellTokens: 200,
@@ -262,7 +262,7 @@ export class Board {
     runtime.score = row.score | 0;
     runtime.clears = row.clears | 0;
     runtime.booms = row.booms | 0;
-    runtime.cooldownUntil = Math.max(runtime.cooldownUntil | 0, row.cool | 0);
+    runtime.cooldownUntil = Math.max(stamp(runtime.cooldownUntil), stamp(row.cool));
     return runtime;
   }
 
@@ -386,7 +386,7 @@ export class Board {
         player.score | 0,
         player.clears | 0,
         player.booms | 0,
-        player.cooldownUntil | 0,
+        stamp(player.cooldownUntil),
         now,
         att.id,
       );
@@ -395,6 +395,7 @@ export class Board {
       if (gained || found) {
         const event = {
           type: found ? "boom" : "clear",
+          id: att.id,
           name: att.name,
           color: att.color,
           x: (result.booms?.[0] || result.cells?.[0] || {}).x ?? 0,
@@ -431,7 +432,7 @@ export class Board {
       score: player.score | 0,
       clears: player.clears | 0,
       booms: player.booms | 0,
-      cooldownUntil: player.cooldownUntil | 0,
+      cooldownUntil: stamp(player.cooldownUntil),
     }));
   }
 
@@ -561,6 +562,11 @@ export class Board {
   }
 }
 
+function stamp(n) {
+  const v = typeof n === "bigint" ? Number(n) : Number(n);
+  return Number.isFinite(v) ? Math.trunc(v) : 0;
+}
+
 function publicYou(row, runtime) {
   return {
     id: row.id,
@@ -569,7 +575,7 @@ function publicYou(row, runtime) {
     score: row.score | 0,
     clears: row.clears | 0,
     booms: row.booms | 0,
-    cooldownUntil: Math.max(row.cool | 0, runtime?.cooldownUntil | 0),
+    cooldownUntil: Math.max(stamp(row.cool), stamp(runtime?.cooldownUntil)),
   };
 }
 
