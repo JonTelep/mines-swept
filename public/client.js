@@ -20,7 +20,18 @@ const cursors = new Map();
 const flashes = new Map();
 let particles = [];
 
-const cam = { x: 0.5, y: 0.5, z: 36 };
+const cam = { x: 500, y: 500, z: 36 };
+const goal = { x: 500, y: 500, z: 36 };
+let boardSize = 1000;
+const BIN = 8;
+const mapCanvas = document.createElement("canvas");
+const mapCtx = mapCanvas.getContext("2d", { willReadFrequently: true });
+let mapN = 0;
+let mapRev = new Uint8Array(0);
+let mapFlag = new Uint8Array(0);
+let mapBlast = new Uint8Array(0);
+let mapDirty = true;
+const pins = new Map();
 let cssW = 1;
 let cssH = 1;
 let dpr = 1;
@@ -59,9 +70,19 @@ function resize() {
   canvas.width = Math.floor(cssW * dpr);
   canvas.height = Math.floor(cssH * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const mini = $("mini");
+  if (mini) {
+    const css = cssW <= 800 ? 76 : 104;
+    const scale = Math.min(2, dpr);
+    mini.width = Math.floor(css * scale);
+    mini.height = Math.floor(css * scale);
+  }
   const across = cssW < 700 ? 11 : 18;
   if (!resize.did) {
     cam.z = clamp(Math.floor(cssW / across), minZoom(), 48);
+    goal.z = cam.z;
+    goal.x = cam.x;
+    goal.y = cam.y;
     resize.did = true;
   }
   scheduleView();
@@ -71,8 +92,132 @@ function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
 }
 
+function fitZoom() {
+  const pad = 36;
+  return Math.max(0.05, Math.min((cssW - pad) / boardSize, (cssH - pad) / boardSize));
+}
+
 function minZoom() {
-  return Math.max(18, Math.ceil(Math.max(cssW, cssH) / 74));
+  return fitZoom();
+}
+
+function usesOverview() {
+  return Math.max(cssW, cssH) / cam.z > 72;
+}
+
+function inBoard(x, y) {
+  return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < boardSize && y < boardSize;
+}
+
+function useSize(n) {
+  const size = n | 0;
+  if (size < 8 || size === boardSize) return;
+  boardSize = size;
+  cam.x = goal.x = size / 2;
+  cam.y = goal.y = size / 2;
+  const z = clamp(32, minZoom(), 48);
+  cam.z = goal.z = z;
+  mapN = 0;
+  lastView = "";
+  scheduleView();
+}
+
+function clampCamera(c) {
+  const halfW = cssW / 2 / c.z;
+  const halfH = cssH / 2 / c.z;
+  if (halfW * 2 >= boardSize) c.x = boardSize / 2;
+  else c.x = clamp(c.x, halfW, boardSize - halfW);
+  if (halfH * 2 >= boardSize) c.y = boardSize / 2;
+  else c.y = clamp(c.y, halfH, boardSize - halfH);
+}
+
+function fitBoard() {
+  goal.x = boardSize / 2;
+  goal.y = boardSize / 2;
+  goal.z = fitZoom();
+  clampCamera(goal);
+}
+
+function ensureMap() {
+  const n = Math.max(1, Math.ceil(boardSize / BIN));
+  if (mapN === n && mapRev.length === n * n) return;
+  mapN = n;
+  mapRev = new Uint8Array(n * n);
+  mapFlag = new Uint8Array(n * n);
+  mapBlast = new Uint8Array(n * n);
+  mapCanvas.width = n;
+  mapCanvas.height = n;
+  mapDirty = true;
+}
+
+function decodeBins(b64) {
+  if (!b64) return [];
+  const raw = atob(b64);
+  const out = [];
+  for (let i = 0; i + 4 < raw.length; i += 5) {
+    out.push({
+      bx: raw.charCodeAt(i),
+      by: raw.charCodeAt(i + 1),
+      revealed: raw.charCodeAt(i + 2),
+      flags: raw.charCodeAt(i + 3),
+      blast: raw.charCodeAt(i + 4),
+    });
+  }
+  return out;
+}
+
+function applyMap(msg, reset) {
+  if (!msg) return;
+  ensureMap();
+  if (reset) {
+    mapRev.fill(0);
+    mapFlag.fill(0);
+    mapBlast.fill(0);
+  }
+  for (const bin of decodeBins(msg.bins)) {
+    if (bin.bx < 0 || bin.by < 0 || bin.bx >= mapN || bin.by >= mapN) continue;
+    const i = bin.by * mapN + bin.bx;
+    mapRev[i] = bin.revealed;
+    mapFlag[i] = bin.flags;
+    mapBlast[i] = bin.blast;
+  }
+  mapDirty = true;
+}
+
+function paintMapImage() {
+  ensureMap();
+  if (!mapDirty) return;
+  const img = mapCtx.createImageData(mapN, mapN);
+  const d = img.data;
+  for (let i = 0; i < mapN * mapN; i++) {
+    const o = i * 4;
+    const rev = mapRev[i];
+    const flag = mapFlag[i];
+    const blast = mapBlast[i];
+    if (blast) {
+      d[o] = 212;
+      d[o + 1] = 72;
+      d[o + 2] = 48;
+      d[o + 3] = 255;
+      continue;
+    }
+    const t = Math.min(1, rev / 28);
+    let r = 46 + t * (214 - 46);
+    let g = 38 + t * (190 - 38);
+    let b = 28 + t * (142 - 28);
+    if (flag) {
+      const f = Math.min(1, flag / 6);
+      r = r * (1 - f) + 228 * f;
+      g = g * (1 - f) + 177 * f;
+      b = b * (1 - f) + 90 * f;
+    }
+    d[o] = r;
+    d[o + 1] = g;
+    d[o + 2] = b;
+    d[o + 3] = 255;
+  }
+  mapCtx.putImageData(img, 0, 0);
+  mapDirty = false;
 }
 
 function worldToScreen(wx, wy) {
@@ -121,6 +266,12 @@ function scheduleView() {
 
 function sendView() {
   if (!alive) return;
+  if (usesOverview()) {
+    if (lastView === "wide") return;
+    lastView = "wide";
+    send({ t: "view", wide: 1 });
+    return;
+  }
   const v = viewRect();
   const sig = `${v.x0},${v.y0},${v.x1},${v.y1}`;
   if (sig === lastView) return;
@@ -179,14 +330,31 @@ function onMsg(msg) {
     paintFeed(msg.feed?.[0]);
     applySnapshot(msg);
     takeStats(msg.stats);
-    paintHistory(msg.history, msg.stats?.best);
+    paintHistory(msg.history, msg.stats?.best, msg.fame);
+    if (msg.stats?.size) useSize(msg.stats.size);
+    if (msg.map) applyMap(msg.map, true);
     if (msg.chat) for (const line of msg.chat) addChat(line);
-    if (msg.over) showOver(msg.over);
+    if (msg.over?.win) showWin(msg.over);
+    else if (msg.over) showOver(msg.over);
     return;
   }
   if (msg.t === "snapshot") {
+    if (msg.map) applyMap(msg.map, Boolean(msg.map.reset) || msg.wide);
+    if (msg.wide) return;
     applySnapshot(msg);
     if (msg.cursors) for (const p of msg.cursors) noteCursor(p);
+    return;
+  }
+  if (msg.t === "map") {
+    applyMap(msg, Boolean(msg.reset));
+    return;
+  }
+  if (msg.t === "pin" && msg.p) {
+    notePin(msg.p);
+    return;
+  }
+  if (msg.t === "win") {
+    showWin(msg);
     return;
   }
   if (msg.t === "delta") {
@@ -282,6 +450,12 @@ function applyCells(list, flash) {
 function noteCursor(p) {
   if (!p || p.id === me.id) return;
   cursors.set(p.id, { ...p, at: performance.now() });
+  notePin(p);
+}
+
+function notePin(p) {
+  if (!p || p.id === me.id || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+  pins.set(p.id, { ...p, at: performance.now() });
 }
 
 function paintYou() {
@@ -335,17 +509,26 @@ function paintHud(stats) {
   const dug = stats.roundCleared != null ? stats.roundCleared : stats.cleared;
   $("everyone").innerHTML = `<strong>${fmt(dug)}</strong> dug this round`;
   if (alive) $("online").textContent = `${stats.online} sweeping`;
+  if (stats.size) useSize(stats.size);
+  if (stats.safe != null) progress.safe = stats.safe | 0;
+  if (stats.roundCleared != null) progress.cleared = stats.roundCleared | 0;
+  paintProgress();
   if (stats.best) paintHistory(null, stats.best);
 }
 
-function paintHistory(rows, best) {
+function paintHistory(rows, best, fame) {
   if (best && $("best")) {
     $("best").textContent = best.ms
       ? `Longest round #${best.round} survived ${clock(best.ms)}`
       : "No round has ended yet.";
   }
-  if (!rows || !$("shame")) return;
-  const ol = $("shame");
+  if (rows) paintHall("shame", rows);
+  if (fame) paintHall("fame", fame);
+}
+
+function paintHall(id, rows) {
+  const ol = $(id);
+  if (!ol) return;
   ol.replaceChildren();
   for (const row of rows) {
     const li = document.createElement("li");
@@ -357,6 +540,31 @@ function paintHistory(rows, best) {
     li.append(who, meta);
     ol.appendChild(li);
   }
+  if (id === "fame") {
+    const empty = $("fame-empty");
+    if (empty) empty.hidden = rows.length > 0;
+  }
+}
+
+let progress = { cleared: 0, safe: 0 };
+
+function paintProgress() {
+  const bar = $("progress");
+  const track = $("progress-track");
+  const label = $("progress-label");
+  if (!bar || !track) return;
+  const safe = progress.safe | 0;
+  const cleared = Math.max(0, progress.cleared | 0);
+  const pct = safe > 0 ? Math.min(100, (cleared / safe) * 100) : 0;
+  bar.style.width = `${pct}%`;
+  track.setAttribute("aria-valuenow", String(Math.round(pct)));
+  if (!label) return;
+  if (!safe) {
+    label.textContent = "0% clear";
+    return;
+  }
+  const shown = pct <= 0 ? "0" : pct >= 10 ? pct.toFixed(1) : pct >= 0.1 ? pct.toFixed(2) : pct.toFixed(3);
+  label.textContent = `${shown}% clear · ${fmt(cleared)} / ${fmt(safe)}`;
 }
 
 function showOver(msg) {
@@ -367,20 +575,70 @@ function showOver(msg) {
   roundTicked = false;
   const banner = $("over");
   banner.hidden = false;
+  banner.classList.remove("win");
+  $("over-kicker").textContent = "Game over";
   $("over-name").textContent = msg.name || "Someone";
   $("over-name").style.color = msg.color || "#d4533a";
   $("over-line").textContent = msg.line || "";
+  $("over-tops").replaceChildren();
   if (msg.cells) applyCells(msg.cells, true);
   if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
-    cam.x = msg.x + 0.5;
-    cam.y = msg.y + 0.5;
+    const z = clamp(Math.max(cam.z, 32), minZoom(), 48);
+    cam.x = goal.x = msg.x + 0.5;
+    cam.y = goal.y = msg.y + 0.5;
+    cam.z = goal.z = z;
+    clampCamera(cam);
+    goal.x = cam.x;
+    goal.y = cam.y;
+    lastView = "";
     scheduleView();
   }
-  paintHistory(msg.history, msg.best);
+  paintHistory(msg.history, msg.best, msg.fame);
   if (msg.stats) takeStats(msg.stats);
   punch();
   boom(true);
   paintRound();
+}
+
+function showWin(msg) {
+  roundState.phase = "over";
+  roundState.n = msg.round || roundState.n;
+  roundState.nextAt = msg.nextAt || roundState.nextAt;
+  roundState.online = msg.online | 0;
+  roundTicked = false;
+  const banner = $("over");
+  banner.hidden = false;
+  banner.classList.add("win");
+  $("over-kicker").textContent = "Cleared";
+  $("over-name").textContent = msg.name || "Everyone";
+  $("over-name").style.color = msg.color || "#8eae78";
+  $("over-line").textContent = msg.line || "";
+  paintTops(msg.tops || []);
+  paintHistory(msg.history, msg.best, msg.fame);
+  if (msg.stats) takeStats(msg.stats);
+  fitBoard();
+  if (!reduceMotion) {
+    document.body.classList.add("winflash");
+    setTimeout(() => document.body.classList.remove("winflash"), 700);
+  }
+  fanfare();
+  paintRound();
+}
+
+function paintTops(rows) {
+  const ol = $("over-tops");
+  if (!ol) return;
+  ol.replaceChildren();
+  for (const row of rows.slice(0, 5)) {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.style.color = row.color || "#e4b15a";
+    name.textContent = row.name;
+    const meta = document.createElement("span");
+    meta.textContent = `${fmt(row.clears)} dug`;
+    li.append(name, meta);
+    ol.appendChild(li);
+  }
 }
 
 function showRound(msg) {
@@ -394,13 +652,20 @@ function showRound(msg) {
   roundTicked = false;
   cells.clear();
   flashes.clear();
-  $("over").hidden = true;
+  pins.clear();
+  const banner = $("over");
+  banner.hidden = true;
+  banner.classList.remove("win");
+  $("over-tops").replaceChildren();
   me.score = 0;
   me.clears = 0;
+  progress.cleared = 0;
   paintYou();
+  paintProgress();
+  if (msg.map) applyMap(msg.map, true);
   if (msg.stats) takeStats(msg.stats);
   if (msg.leaderboard) paintLeaders(msg.leaderboard);
-  paintHistory(msg.history, msg.best || msg.stats?.best);
+  paintHistory(msg.history, msg.best || msg.stats?.best, msg.fame);
   paintRound();
 }
 
@@ -520,8 +785,8 @@ function play(fn) {
   }
 }
 
-function tone(ctx, { type, freq, end, dur, vol }) {
-  const t = ctx.currentTime;
+function tone(ctx, { type, freq, end, dur, vol, at }) {
+  const t = ctx.currentTime + (at || 0);
   const o = ctx.createOscillator();
   const g = ctx.createGain();
   o.type = type;
@@ -572,6 +837,15 @@ function chime() {
   });
 }
 
+function fanfare() {
+  play((audio) => {
+    tone(audio, { type: "sine", freq: 392, dur: 0.16, vol: 0.14, at: 0 });
+    tone(audio, { type: "sine", freq: 523, dur: 0.18, vol: 0.15, at: 0.14 });
+    tone(audio, { type: "sine", freq: 659, dur: 0.32, vol: 0.16, at: 0.3 });
+    tone(audio, { type: "triangle", freq: 784, dur: 0.42, vol: 0.08, at: 0.3 });
+  });
+}
+
 function boom(own) {
   play((ctx) => {
     const body = own ? 0.55 : 0.28;
@@ -599,6 +873,10 @@ function burst(x, y, color) {
 
 function dig(x, y) {
   dismissHint();
+  if (!inBoard(x, y)) {
+    toast("That's off the map.");
+    return;
+  }
   if (flagMode) {
     send({ t: "flag", x, y });
     flagSound();
@@ -610,6 +888,10 @@ function dig(x, y) {
 
 function flag(x, y) {
   dismissHint();
+  if (!inBoard(x, y)) {
+    toast("That's off the map.");
+    return;
+  }
   send({ t: "flag", x, y });
   flagSound();
 }
@@ -620,51 +902,161 @@ function dismissHint() {
   $("hint").classList.add("gone");
 }
 
-function draw() {
-  ctx.clearRect(0, 0, cssW, cssH);
-  ctx.fillStyle = "#140e0a";
-  ctx.fillRect(0, 0, cssW, cssH);
-
-  const v = viewRect();
-  const gutter = cam.z > 22 ? 1.5 : 0;
-  const now = performance.now();
-  const numSize = Math.floor((cam.z - gutter) * 0.58);
-  ctx.font = `700 ${numSize}px ${MONO}`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-
-  for (let y = v.y0; y <= v.y1; y++) {
-    for (let x = v.x0; x <= v.x1; x++) {
-      const [sx, sy] = worldToScreen(x, y);
-      if (sx > cssW || sy > cssH || sx + cam.z < 0 || sy + cam.z < 0) continue;
-      const cell = cells.get(x + "," + y);
-      drawCell(sx, sy, cam.z - gutter, x, y, cell, now);
+function easeCam() {
+  const dx = goal.x - cam.x;
+  const dy = goal.y - cam.y;
+  const dz = goal.z - cam.z;
+  if (Math.abs(dx) < 0.02 && Math.abs(dy) < 0.02 && Math.abs(dz) < 0.02) {
+    if (easeCam.live) {
+      cam.x = goal.x;
+      cam.y = goal.y;
+      cam.z = goal.z;
+      easeCam.live = false;
+      scheduleView();
     }
+    return;
   }
-
-  if (hover && !press?.moved) {
-    const [sx, sy] = worldToScreen(hover[0], hover[1]);
-    ctx.strokeStyle = "rgba(228, 177, 90, 0.9)";
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(sx + 0.5, sy + 0.5, cam.z - gutter - 1, cam.z - gutter - 1);
+  const wasFar = usesOverview();
+  cam.x += dx * 0.28;
+  cam.y += dy * 0.28;
+  cam.z += dz * 0.28;
+  easeCam.live = true;
+  if (usesOverview() !== wasFar) {
+    lastView = "";
+    scheduleView();
   }
+}
 
-  if (press && press.hold && !press.moved) {
-    const [sx, sy] = worldToScreen(press.cell[0], press.cell[1]);
-    const t = clamp((now - press.t) / 450, 0, 1);
-    ctx.strokeStyle = `rgba(228, 177, 90, ${0.3 + t * 0.7})`;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(sx + cam.z / 2, sy + cam.z / 2, (cam.z / 2) * t, 0, Math.PI * 2);
-    ctx.stroke();
-  }
+function drawBoardEdge() {
+  const [sx, sy] = worldToScreen(0, 0);
+  const span = boardSize * cam.z;
+  ctx.strokeStyle = "rgba(228, 177, 90, 0.92)";
+  ctx.lineWidth = usesOverview() ? 2 : 3;
+  ctx.strokeRect(sx + 0.5, sy + 0.5, Math.max(1, span - 1), Math.max(1, span - 1));
+}
 
-  for (const [id, c] of cursors) {
-    if (now - c.at > 6000) {
-      cursors.delete(id);
+function drawOverview() {
+  paintMapImage();
+  const [sx, sy] = worldToScreen(0, 0);
+  const span = boardSize * cam.z;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(mapCanvas, sx, sy, span, span);
+  drawBoardEdge();
+  const now = performance.now();
+  for (const [id, pin] of pins) {
+    if (now - pin.at > 12000) {
+      pins.delete(id);
       continue;
     }
-    drawCursor(c);
+    const [px, py] = worldToScreen(pin.x + 0.5, pin.y + 0.5);
+    ctx.fillStyle = "#140e0a";
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = pin.color || "#e4b15a";
+    ctx.beginPath();
+    ctx.arc(px, py, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawMinimap() {
+  const mini = $("mini");
+  if (!mini) return;
+  paintMapImage();
+  const mctx = mini.getContext("2d");
+  const w = mini.width;
+  const h = mini.height;
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  mctx.fillStyle = "#0c0907";
+  mctx.fillRect(0, 0, w, h);
+  const pad = Math.max(2, Math.round(w * 0.04));
+  const inner = w - pad * 2;
+  mctx.imageSmoothingEnabled = false;
+  mctx.drawImage(mapCanvas, pad, pad, inner, inner);
+  mctx.strokeStyle = "rgba(228, 177, 90, 0.7)";
+  mctx.lineWidth = 1;
+  mctx.strokeRect(pad + 0.5, pad + 0.5, inner - 1, inner - 1);
+  const halfW = cssW / 2 / cam.z;
+  const halfH = cssH / 2 / cam.z;
+  const rx = pad + ((cam.x - halfW) / boardSize) * inner;
+  const ry = pad + ((cam.y - halfH) / boardSize) * inner;
+  const rw = (halfW * 2 / boardSize) * inner;
+  const rh = (halfH * 2 / boardSize) * inner;
+  mctx.strokeStyle = "#f3e6cf";
+  mctx.lineWidth = Math.max(1, w / 80);
+  mctx.strokeRect(rx, ry, Math.max(2, rw), Math.max(2, rh));
+  const now = performance.now();
+  for (const pin of pins.values()) {
+    if (now - pin.at > 12000) continue;
+    mctx.fillStyle = pin.color || "#e4b15a";
+    mctx.fillRect(
+      pad + (pin.x / boardSize) * inner - 1,
+      pad + (pin.y / boardSize) * inner - 1,
+      3,
+      3,
+    );
+  }
+}
+
+function draw() {
+  easeCam();
+  document.body.classList.toggle("far", usesOverview());
+  ctx.clearRect(0, 0, cssW, cssH);
+  ctx.fillStyle = "#0c0907";
+  ctx.fillRect(0, 0, cssW, cssH);
+
+  const now = performance.now();
+  const far = usesOverview();
+  if (far) {
+    drawOverview();
+  } else {
+    const v = viewRect();
+    const gutter = cam.z > 22 ? 1.5 : 0;
+    const x0 = Math.max(0, v.x0);
+    const y0 = Math.max(0, v.y0);
+    const x1 = Math.min(boardSize - 1, v.x1);
+    const y1 = Math.min(boardSize - 1, v.y1);
+    const numSize = Math.floor((cam.z - gutter) * 0.58);
+    ctx.font = `700 ${numSize}px ${MONO}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const [sx, sy] = worldToScreen(x, y);
+        if (sx > cssW || sy > cssH || sx + cam.z < 0 || sy + cam.z < 0) continue;
+        const cell = cells.get(x + "," + y);
+        drawCell(sx, sy, cam.z - gutter, x, y, cell, now);
+      }
+    }
+    drawBoardEdge();
+
+    if (hover && inBoard(hover[0], hover[1]) && !press?.moved) {
+      const [sx, sy] = worldToScreen(hover[0], hover[1]);
+      ctx.strokeStyle = "rgba(228, 177, 90, 0.9)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sx + 0.5, sy + 0.5, cam.z - gutter - 1, cam.z - gutter - 1);
+    }
+
+    if (press && press.hold && !press.moved && inBoard(press.cell[0], press.cell[1])) {
+      const [sx, sy] = worldToScreen(press.cell[0], press.cell[1]);
+      const t = clamp((now - press.t) / 450, 0, 1);
+      ctx.strokeStyle = `rgba(228, 177, 90, ${0.3 + t * 0.7})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx + cam.z / 2, sy + cam.z / 2, (cam.z / 2) * t, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    for (const [id, c] of cursors) {
+      if (now - c.at > 6000) {
+        cursors.delete(id);
+        continue;
+      }
+      if (!inBoard(c.x, c.y)) continue;
+      drawCursor(c);
+    }
   }
 
   for (let i = particles.length - 1; i >= 0; i--) {
@@ -683,11 +1075,12 @@ function draw() {
   }
 
   const center = cellAt(cssW / 2, cssH / 2);
-  const coord = `${center[0]}, ${center[1]}`;
+  const coord = inBoard(center[0], center[1]) ? `${center[0]}, ${center[1]}` : "off the board";
   if (coord !== draw.coord) {
     draw.coord = coord;
     $("coords").textContent = coord;
   }
+  drawMinimap();
   paintCool(now);
   paintRound();
   requestAnimationFrame(draw);
@@ -816,8 +1209,22 @@ function localPoint(e) {
 }
 
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("mousedown", (e) => {
+  if (e.button === 1) e.preventDefault();
+});
+canvas.addEventListener("auxclick", (e) => {
+  if (e.button === 1) e.preventDefault();
+});
+
+let digTimer = 0;
+let lastTap = { t: 0, x: 0, y: 0 };
+
+function zoomInto(px, py) {
+  zoomAt(px, py, clamp(Math.max(cam.z * 2.4, 22), minZoom(), 78), false);
+}
 
 canvas.addEventListener("pointerdown", (e) => {
+  if (e.button === 1) e.preventDefault();
   canvas.setPointerCapture(e.pointerId);
   const [px, py] = localPoint(e);
   pointers.set(e.pointerId, { x: px, y: py });
@@ -825,11 +1232,21 @@ canvas.addEventListener("pointerdown", (e) => {
     const pts = [...pointers.values()];
     pinch = { d: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y), z: cam.z };
     if (press) press.moved = true;
+    clearTimeout(digTimer);
     return;
   }
+  if (e.button === 1) {
+    clearTimeout(digTimer);
+    press = { x: px, y: py, cell: cellAt(px, py), t: performance.now(), moved: false, hold: false, id: e.pointerId, middle: true };
+    return;
+  }
+  if (press?.middle) return;
   if (e.button === 2) {
-    const cell = cellAt(px, py);
-    flag(cell[0], cell[1]);
+    if (usesOverview()) zoomInto(px, py);
+    else {
+      const cell = cellAt(px, py);
+      flag(cell[0], cell[1]);
+    }
     return;
   }
   if (e.button !== 0) return;
@@ -837,6 +1254,7 @@ canvas.addEventListener("pointerdown", (e) => {
 });
 
 canvas.addEventListener("pointermove", (e) => {
+  if ((e.buttons & 4) || press?.middle) e.preventDefault();
   const [px, py] = localPoint(e);
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: px, y: py });
   hover = cellAt(px, py);
@@ -847,7 +1265,7 @@ canvas.addEventListener("pointermove", (e) => {
     const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
     if (pinch.d > 0) {
       const next = clamp(pinch.z * (d / pinch.d), minZoom(), 78);
-      zoomAt((pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2, next);
+      zoomAt((pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2, next, true);
     }
     return;
   }
@@ -859,10 +1277,15 @@ canvas.addEventListener("pointermove", (e) => {
     press.hold = false;
     press.lx = px;
     press.ly = py;
+    clearTimeout(digTimer);
   }
   if (press.moved) {
     cam.x -= (px - press.lx) / cam.z;
     cam.y -= (py - press.ly) / cam.z;
+    clampCamera(cam);
+    goal.x = cam.x;
+    goal.y = cam.y;
+    goal.z = cam.z;
     press.lx = px;
     press.ly = py;
     scheduleView();
@@ -873,13 +1296,42 @@ canvas.addEventListener("pointerup", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch = null;
   if (!press || press.id !== e.pointerId) return;
+  if (press.middle || e.button === 1) {
+    if (e.button === 1) press = null;
+    return;
+  }
+  if (e.button !== 0) return;
   const held = performance.now() - press.t;
   const cell = press.cell;
   const moved = press.moved;
+  const px = press.x;
+  const py = press.y;
   press = null;
-  if (moved) return;
-  if (held >= 450) flag(cell[0], cell[1]);
-  else dig(cell[0], cell[1]);
+  if (moved || pointers.size > 0) return;
+  if (usesOverview()) {
+    zoomInto(px, py);
+    return;
+  }
+  if (held >= 450) {
+    flag(cell[0], cell[1]);
+    return;
+  }
+  if (flagMode) {
+    flag(cell[0], cell[1]);
+    return;
+  }
+  const nowTap = performance.now();
+  if (nowTap - lastTap.t < 450 && Math.hypot(px - lastTap.x, py - lastTap.y) < 28) {
+    clearTimeout(digTimer);
+    lastTap.t = 0;
+    zoomAt(px, py, clamp(cam.z * 2, minZoom(), 78), false);
+    return;
+  }
+  lastTap = { t: nowTap, x: px, y: py };
+  clearTimeout(digTimer);
+  digTimer = setTimeout(() => {
+    dig(cell[0], cell[1]);
+  }, 420);
 });
 
 canvas.addEventListener("pointercancel", (e) => {
@@ -890,21 +1342,32 @@ canvas.addEventListener("pointercancel", (e) => {
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
   const [px, py] = localPoint(e);
-  const factor = Math.exp(-e.deltaY * 0.0011);
-  zoomAt(px, py, clamp(cam.z * factor, minZoom(), 78));
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  const base = easeCam.live ? goal.z : cam.z;
+  zoomAt(px, py, clamp(base * factor, minZoom(), 78), false);
 }, { passive: false });
 
-function zoomAt(px, py, next) {
-  const [wx, wy] = screenToWorld(px, py);
-  cam.z = next;
-  cam.x = wx - (px - cssW / 2) / cam.z;
-  cam.y = wy - (py - cssH / 2) / cam.z;
-  scheduleView();
+function zoomAt(px, py, next, immediate) {
+  const z = clamp(next, minZoom(), 78);
+  const base = immediate || !easeCam.live ? cam : goal;
+  const wx = base.x + (px - cssW / 2) / base.z;
+  const wy = base.y + (py - cssH / 2) / base.z;
+  goal.z = z;
+  goal.x = wx - (px - cssW / 2) / z;
+  goal.y = wy - (py - cssH / 2) / z;
+  clampCamera(goal);
+  if (immediate) {
+    cam.x = goal.x;
+    cam.y = goal.y;
+    cam.z = goal.z;
+    scheduleView();
+  }
 }
 
 let lastCursorSent = 0;
 let lastCursorCell = "";
 function maybeCursor(x, y) {
+  if (!inBoard(x, y)) return;
   const sig = x + "," + y;
   const now = performance.now();
   if (sig === lastCursorCell || now - lastCursorSent < 750) return;
@@ -921,15 +1384,21 @@ addEventListener("keydown", (e) => {
   else if (e.key === "ArrowUp" || e.key === "w") cam.y -= step;
   else if (e.key === "ArrowDown" || e.key === "s") cam.y += step;
   else if (e.key === "f") toggleFlagMode();
-  else if (e.key === "+" || e.key === "=") zoomAt(cssW / 2, cssH / 2, clamp(cam.z * 1.12, minZoom(), 78));
-  else if (e.key === "-" || e.key === "_") zoomAt(cssW / 2, cssH / 2, clamp(cam.z / 1.12, minZoom(), 78));
+  else if (e.key === "+" || e.key === "=") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) * 1.18, minZoom(), 78), false);
+  else if (e.key === "-" || e.key === "_") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) / 1.18, minZoom(), 78), false);
   else if (e.key === "Escape") {
     setLeaderboard(false);
     e.preventDefault();
     return;
   }
   else return;
-  scheduleView();
+  if (e.key.startsWith("Arrow") || "wasd".includes(e.key)) {
+    clampCamera(cam);
+    goal.x = cam.x;
+    goal.y = cam.y;
+    goal.z = cam.z;
+    scheduleView();
+  }
   e.preventDefault();
 });
 
@@ -940,12 +1409,25 @@ function toggleFlagMode() {
 }
 
 $("flag-mode").addEventListener("click", toggleFlagMode);
-$("zoom-in").addEventListener("click", () => zoomAt(cssW / 2, cssH / 2, clamp(cam.z * 1.15, minZoom(), 78)));
-$("zoom-out").addEventListener("click", () => zoomAt(cssW / 2, cssH / 2, clamp(cam.z / 1.15, minZoom(), 78)));
-$("origin").addEventListener("click", () => {
-  cam.x = 0.5;
-  cam.y = 0.5;
-  scheduleView();
+$("zoom-in").addEventListener("click", () => {
+  const z = easeCam.live ? goal.z : cam.z;
+  zoomAt(cssW / 2, cssH / 2, clamp(z * 1.45, minZoom(), 78), false);
+});
+$("zoom-out").addEventListener("click", () => {
+  const z = easeCam.live ? goal.z : cam.z;
+  zoomAt(cssW / 2, cssH / 2, clamp(z / 1.45, minZoom(), 78), false);
+});
+$("origin").addEventListener("click", () => fitBoard());
+$("mini").addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  const r = $("mini").getBoundingClientRect();
+  const u = clamp((e.clientX - r.left) / r.width, 0, 1);
+  const v = clamp((e.clientY - r.top) / r.height, 0, 1);
+  goal.x = u * boardSize;
+  goal.y = v * boardSize;
+  if (usesOverview()) goal.z = clamp(28, minZoom(), 48);
+  clampCamera(goal);
 });
 function setChat(open) {
   $("chat").classList.toggle("open", open);

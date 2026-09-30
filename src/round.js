@@ -31,6 +31,14 @@ export function formatDuration(ms) {
   return `${sec}s`;
 }
 
+export function winLine({ round, durationMs, cleared, leader }) {
+  const cells = Math.max(0, cleared | 0).toLocaleString("en-US");
+  const led = leader?.name
+    ? ` ${leader.name} led with ${Math.max(0, leader.clears | 0).toLocaleString("en-US")}.`
+    : "";
+  return `The field is clear. Round #${round} lasted ${formatDuration(durationMs)}, ${cells} safe cells.${led}`;
+}
+
 export function shameLine({ name, online, round, durationMs, cleared }) {
   const people = online === 1 ? "1 person" : `${Number(online) || 0} people`;
   const cells = Math.max(0, cleared | 0).toLocaleString("en-US");

@@ -179,8 +179,8 @@ test("two clients see each other's moves, and the field survives a restart", asy
     const adaYou = await ada.until((m) => m.t === "you");
     assert.equal(typeof adaYou.score, "number");
 
-    bea.send({ t: "flag", x: -4, y: 5 });
-    const back = await ada.until((m) => m.t === "delta" && m.cells?.some((c) => c.x === -4 && c.y === 5 && c.k === "f"));
+    bea.send({ t: "flag", x: 4, y: 5 });
+    const back = await ada.until((m) => m.t === "delta" && m.cells?.some((c) => c.x === 4 && c.y === 5 && c.k === "f"));
     assert.ok(back.cells);
 
     const stats = await fetch(`http://127.0.0.1:${PORT}/api/stats`);

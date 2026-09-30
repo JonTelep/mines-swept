@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev --port 8787 --ip 0.0.0.0 --show-interactive-dev-session=false",
     "deploy": "wrangler deploy",
-    "test": "node --test --test-concurrency=1 --test-timeout 180000 test/game.test.js test/filter.test.js test/multiplayer.test.js test/social.test.js"
+    "test": "node --test --test-concurrency=1 --test-timeout 180000 test/game.test.js test/filter.test.js test/finite.test.js test/multiplayer.test.js test/social.test.js"
   },
   "devDependencies": {
     "wrangler": "^4.40.0"

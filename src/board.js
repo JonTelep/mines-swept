@@ -4,18 +4,28 @@
 
 import {
   CHUNK,
-  WORLD,
   attemptDig,
   attemptFlag,
+  boardSpan,
+  countMines,
   deterministicMine,
   inBounds,
   key,
+  setActiveSize,
 } from "./game.js";
 import { cleanName, colorFromId, nameFromId, validPlayerId } from "./names.js";
 import { renderShareCard } from "./png.js";
 import { checkChatRate, CHAT_KEEP, prepareChat } from "./chat.js";
 import { containsSlur } from "./slurs.js";
-import { INTERMISSION_MS, minesAround, shameLine, spareReason } from "./round.js";
+import { INTERMISSION_MS, minesAround, shameLine, spareReason, winLine } from "./round.js";
+import {
+  BIN,
+  countDeterministicMines,
+  encodeRows,
+  resolveBoardSize,
+  roundWon,
+  safeCells,
+} from "./overview.js";
 
 const MAX_SOCKETS = 500;
 const MAX_PER_IP = 8;
@@ -35,6 +45,11 @@ export class Board {
     this.seed = 1;
     this.feed = [];
     this.runtime = new Map();
+    this.boardSize = resolveBoardSize(env?.BOARD_SIZE);
+    setActiveSize(this.boardSize);
+    this.mineBase = 0;
+    this.mineDelta = 0;
+    this.dirtyBins = new Map();
     if (typeof ctx.setWebSocketAutoResponse === "function") {
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     }
@@ -94,6 +109,19 @@ export class Board {
       body TEXT NOT NULL,
       kind TEXT NOT NULL
     )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS bins (
+      bx INTEGER NOT NULL,
+      by INTEGER NOT NULL,
+      revealed INTEGER NOT NULL DEFAULT 0,
+      flags INTEGER NOT NULL DEFAULT 0,
+      blast INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (bx, by)
+    )`);
+    try {
+      sql.exec(`ALTER TABLE rounds ADD COLUMN kind TEXT NOT NULL DEFAULT 'boom'`);
+    } catch {
+      /* column already there */
+    }
   }
 
   loadCore() {
@@ -109,6 +137,7 @@ export class Board {
       this.metaSet("flags", "0");
       this.metaSet("born", String(Date.now()));
       this.metaSet("feed", "[]");
+      this.metaSet("size", String(this.boardSize));
     }
     this.seed = Number(seed) >>> 0;
     this.round = Number(this.metaGet("round")) || 0;
@@ -144,11 +173,65 @@ export class Board {
     } catch {
       this.feed = [];
     }
+    this.sql().exec(`DELETE FROM players WHERE id = ?`, "deploycheck-bot01");
+    const storedSize = Number(this.metaGet("size")) || 0;
+    if (storedSize !== this.boardSize) this.adoptFiniteBoard();
+    this.mineBase = Number(this.metaGet("mines")) || 0;
+    this.mineDelta = Number(this.metaGet("mine_delta")) || 0;
+    if (!this.mineBase) {
+      this.mineBase = countDeterministicMines(this.seed, this.boardSize);
+      this.metaSet("mines", String(this.mineBase));
+      this.metaSet("mine_delta", String(this.mineDelta || 0));
+    }
     if (this.phase === "over" && this.nextAt && Date.now() >= this.nextAt) {
       this.beginRound();
     } else if (this.phase === "over" && this.nextAt) {
       this.armAlarm(this.nextAt);
     }
+  }
+
+  adoptFiniteBoard() {
+    const now = Date.now();
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+    const seed = String((buf[0] || 1) >>> 0);
+    const next = (Number(this.metaGet("round")) || 0) + 1;
+    this.phase = "play";
+    this.round = next;
+    this.startedAt = now;
+    this.shield = "";
+    this.over = null;
+    this.nextAt = 0;
+    this.seed = Number(seed) >>> 0;
+    this.overrides = new Map();
+    this.feed = [];
+    this.mineDelta = 0;
+    this.mineBase = countDeterministicMines(this.seed, this.boardSize);
+    const label = this.boardSize.toLocaleString("en-US");
+    txn(this.ctx, () => {
+      this.sql().exec(`DELETE FROM cells`);
+      this.sql().exec(`DELETE FROM overrides`);
+      this.sql().exec(`DELETE FROM bins`);
+      this.sql().exec(`UPDATE players SET score = 0, clears = 0, cool = 0`);
+      this.metaSet("seed", seed);
+      this.metaSet("round", String(next));
+      this.metaSet("started", String(now));
+      this.metaSet("phase", "play");
+      this.metaSet("shield", "");
+      this.metaSet("nextAt", "0");
+      this.metaSet("over", "null");
+      this.metaSet("roundCleared", "0");
+      this.metaSet("feed", "[]");
+      this.metaSet("size", String(this.boardSize));
+      this.metaSet("mines", String(this.mineBase));
+      this.metaSet("mine_delta", "0");
+    });
+    this.postChat({
+      kind: "system",
+      name: "Field",
+      color: "#e4b15a",
+      body: `The field is fenced. Round #${next} is a ${label} by ${label} board.`,
+    });
   }
 
   metaGet(k) {
@@ -248,6 +331,7 @@ export class Board {
     if (msg.t === "reveal") return this.onReveal(ws, att, msg);
     if (msg.t === "flag") return this.onFlag(ws, att, msg);
     if (msg.t === "chat") return this.onChat(ws, att, msg);
+    if (msg.t === "sweep") return this.onSweep(ws, att);
     if (msg.t === "tick") return;
   }
 
@@ -277,7 +361,7 @@ export class Board {
     }
     const row = this.sql().exec(`SELECT * FROM players WHERE id = ?`, msg.id).toArray()[0];
     const runtime = this.runtimeFor(row);
-    const view = sanitizeView(msg.v) || { x0: -12, y0: -8, x1: 12, y1: 8 };
+    const view = sanitizeView(msg.v, this.boardSize) || { x0: 0, y0: 0, x1: 24, y1: 16 };
     const next = {
       ...att,
       hello: true,
@@ -298,6 +382,8 @@ export class Board {
       cursors: this.cursorsIn(view.x0, view.y0, view.x1, view.y1, row.id),
       chat: this.recentChat(),
       history: this.history(8),
+      fame: this.fame(8),
+      map: this.mapPayload(),
       over: this.phase === "over" ? this.overView() : null,
     }));
     this.pushPresence();
@@ -327,10 +413,17 @@ export class Board {
   }
 
   onView(ws, att, msg) {
-    const view = sanitizeView(msg);
+    const wide = msg.wide === 1 || msg.wide === true;
+    const view = wide
+      ? { x0: 0, y0: 0, x1: this.boardSize - 1, y1: this.boardSize - 1, wide: true }
+      : sanitizeView(msg, this.boardSize);
     if (!view) return;
-    const next = { ...att, ...view };
+    const next = { ...att, ...view, wide: Boolean(wide) };
     ws.serializeAttachment(next);
+    if (wide) {
+      ws.send(JSON.stringify({ t: "snapshot", wide: true, map: this.mapPayload() }));
+      return;
+    }
     ws.send(JSON.stringify({
       t: "snapshot",
       ...view,
@@ -352,11 +445,22 @@ export class Board {
       t: "cursors",
       p: [{ id: att.id, name: att.name, color: att.color, x, y }],
     });
+    const pin = JSON.stringify({
+      t: "pin",
+      p: { id: att.id, name: att.name, color: att.color, x, y },
+    });
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === ws) continue;
+      const other = socket.deserializeAttachment();
+      if (other?.hello) {
+        try { socket.send(pin); } catch { /* closed */ }
+      }
+    }
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === ws) continue;
       const other = socket.deserializeAttachment();
       if (!other?.hello) continue;
-      if (!sees(other, x, y)) continue;
+      if (!other.wide && !sees(other, x, y)) continue;
       try {
         socket.send(packet);
       } catch {
@@ -409,7 +513,9 @@ export class Board {
     }
     this.persistPlay(att, player, field, result, now);
     this.emitPlay(ws, att, player, field, result);
+    this.pushMapDelta();
     if (result.booms?.length) this.finishRound(att, field, result, now);
+    else if (roundWon(Number(this.metaGet("roundCleared")) || 0, this.safeCount())) this.finishWin(att, now);
   }
 
   onFlag(ws, att, msg) {
@@ -447,6 +553,7 @@ export class Board {
     } catch {
       /* actor already gone */
     }
+    this.pushMapDelta();
   }
 
   persistPlay(att, player, field, result, now) {
@@ -604,13 +711,21 @@ export class Board {
       startedAt: this.startedAt,
       phase: this.phase,
       nextAt: this.phase === "over" ? this.nextAt : 0,
+      size: this.boardSize,
+      safe: this.safeCount(),
       best: { ms: this.bestMs, round: this.bestRound, name: this.bestName },
     };
   }
 
+  safeCount() {
+    return safeCells(this.boardSize, this.mineBase + this.mineDelta);
+  }
+
   leaderboard() {
     return this.sql().exec(
-      `SELECT id, name, color, score, clears, booms FROM players ORDER BY score DESC, clears DESC, name ASC LIMIT 8`,
+      `SELECT id, name, color, score, clears, booms FROM players
+       WHERE clears > 0
+       ORDER BY score DESC, clears DESC, name ASC LIMIT 8`,
     ).toArray().map((row) => ({
       id: row.id,
       name: row.name,
@@ -647,8 +762,8 @@ export class Board {
     });
     txn(this.ctx, () => {
       this.sql().exec(
-        `INSERT INTO rounds (n, by_id, by_name, by_color, started, ended, cleared, online)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO rounds (n, by_id, by_name, by_color, started, ended, cleared, online, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'boom')
          ON CONFLICT(n) DO UPDATE SET
            by_id = excluded.by_id,
            by_name = excluded.by_name,
@@ -656,7 +771,8 @@ export class Board {
            started = excluded.started,
            ended = excluded.ended,
            cleared = excluded.cleared,
-           online = excluded.online`,
+           online = excluded.online,
+           kind = 'boom'`,
         this.round,
         att.id,
         att.name,
@@ -708,8 +824,82 @@ export class Board {
       stats: this.publicStats(),
       best: { ms: this.bestMs, round: this.bestRound, name: this.bestName },
       history: this.history(8),
+      fame: this.fame(8),
     });
     this.postChat({ kind: "system", name: "Field", color: att.color, body: line });
+  }
+
+  finishWin(att, now) {
+    const cleared = Number(this.metaGet("roundCleared")) || 0;
+    const duration = Math.max(0, now - this.startedAt);
+    const online = Math.max(1, this.onlineCount());
+    const tops = this.leaderboard();
+    const leader = tops[0] || null;
+    const line = winLine({
+      round: this.round,
+      durationMs: duration,
+      cleared,
+      leader,
+    });
+    txn(this.ctx, () => {
+      this.sql().exec(
+        `INSERT INTO rounds (n, by_id, by_name, by_color, started, ended, cleared, online, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'win')
+         ON CONFLICT(n) DO UPDATE SET
+           by_id = excluded.by_id,
+           by_name = excluded.by_name,
+           by_color = excluded.by_color,
+           started = excluded.started,
+           ended = excluded.ended,
+           cleared = excluded.cleared,
+           online = excluded.online,
+           kind = 'win'`,
+        this.round,
+        leader?.id || att.id,
+        leader?.name || att.name,
+        leader?.color || att.color,
+        this.startedAt,
+        now,
+        cleared,
+        online,
+      );
+      if (duration >= this.bestMs) {
+        this.bestMs = duration;
+        this.bestRound = this.round;
+        this.bestName = leader?.name || att.name;
+        this.metaSet("best_ms", String(duration));
+        this.metaSet("best_round", String(this.round));
+        this.metaSet("best_name", this.bestName);
+      }
+      this.phase = "over";
+      this.nextAt = now + INTERMISSION_MS;
+      this.over = {
+        id: "",
+        win: true,
+        name: leader?.name || "Everyone",
+        color: leader?.color || "#8eae78",
+        round: this.round,
+        cleared,
+        online,
+        durationMs: duration,
+        line,
+        nextAt: this.nextAt,
+        tops,
+      };
+      this.metaSet("phase", "over");
+      this.metaSet("nextAt", String(this.nextAt));
+      this.metaSet("over", JSON.stringify(this.over));
+    });
+    this.armAlarm(this.nextAt);
+    this.broadcastAll({
+      t: "win",
+      ...this.over,
+      stats: this.publicStats(),
+      best: { ms: this.bestMs, round: this.bestRound, name: this.bestName },
+      history: this.history(8),
+      fame: this.fame(8),
+    });
+    this.postChat({ kind: "system", name: "Field", color: "#8eae78", body: line });
   }
 
   beginRound() {
@@ -728,9 +918,13 @@ export class Board {
     this.seed = Number(seed) >>> 0;
     this.overrides = new Map();
     this.feed = [];
+    this.dirtyBins = new Map();
+    this.mineBase = countDeterministicMines(this.seed, this.boardSize);
+    this.mineDelta = 0;
     txn(this.ctx, () => {
       this.sql().exec(`DELETE FROM cells`);
       this.sql().exec(`DELETE FROM overrides`);
+      this.sql().exec(`DELETE FROM bins`);
       this.sql().exec(`UPDATE players SET score = 0, clears = 0, cool = 0`);
       this.metaSet("seed", seed);
       this.metaSet("round", String(this.round));
@@ -741,6 +935,9 @@ export class Board {
       this.metaSet("over", "null");
       this.metaSet("roundCleared", "0");
       this.metaSet("feed", "[]");
+      this.metaSet("mines", String(this.mineBase));
+      this.metaSet("mine_delta", "0");
+      this.metaSet("size", String(this.boardSize));
     });
     for (const runtime of this.runtime.values()) {
       runtime.score = 0;
@@ -755,13 +952,15 @@ export class Board {
       stats,
       leaderboard: this.leaderboard(),
       history: this.history(8),
+      fame: this.fame(8),
       best: stats.best,
+      map: { n: Math.ceil(this.boardSize / BIN), bins: "", reset: true },
     });
     this.postChat({
       kind: "system",
       name: "Field",
       color: "#e4b15a",
-      body: `Round #${this.round} is open. Fresh dirt. Don't be the one.`,
+      body: `Round #${this.round} is open. ${this.boardSize.toLocaleString("en-US")} by ${this.boardSize.toLocaleString("en-US")}. Don't be the one.`,
     });
   }
 
@@ -815,8 +1014,17 @@ export class Board {
   }
 
   history(limit) {
+    return this.hallQuery(`kind IS NULL OR kind = 'boom'`, limit);
+  }
+
+  fame(limit) {
+    return this.hallQuery(`kind = 'win'`, limit);
+  }
+
+  hallQuery(where, limit) {
     return this.sql().exec(
-      `SELECT n, by_name, by_color, started, ended, cleared, online FROM rounds ORDER BY n DESC LIMIT ?`,
+      `SELECT n, by_name, by_color, started, ended, cleared, online, kind FROM rounds
+       WHERE ${where} ORDER BY n DESC LIMIT ?`,
       limit,
     ).toArray().map((row) => ({
       n: row.n,
@@ -825,7 +1033,124 @@ export class Board {
       durationMs: Math.max(0, Number(row.ended) - Number(row.started)),
       cleared: row.cleared | 0,
       online: row.online | 0,
+      kind: row.kind === "win" ? "win" : "boom",
     }));
+  }
+
+  mapPayload() {
+    const rows = this.sql().exec(`SELECT bx, by, revealed, flags, blast FROM bins`).toArray();
+    return {
+      n: Math.ceil(this.boardSize / BIN),
+      bins: encodeRows(rows),
+      count: rows.length,
+    };
+  }
+
+  pushMapDelta() {
+    if (!this.dirtyBins || !this.dirtyBins.size) return;
+    const rows = [...this.dirtyBins.values()];
+    this.dirtyBins.clear();
+    this.broadcastAll({
+      t: "map",
+      n: Math.ceil(this.boardSize / BIN),
+      bins: encodeRows(rows),
+    });
+  }
+
+  bumpBin(x, y, dRev, dFlag, blast) {
+    if (!dRev && !dFlag && !blast) return;
+    const bx = Math.floor(x / BIN);
+    const by = Math.floor(y / BIN);
+    if (bx < 0 || by < 0) return;
+    const id = bx + "," + by;
+    let row = this.dirtyBins.get(id);
+    if (!row) {
+      const found = this.sql().exec(
+        `SELECT bx, by, revealed, flags, blast FROM bins WHERE bx = ? AND by = ?`,
+        bx,
+        by,
+      ).toArray()[0];
+      row = found
+        ? { bx, by, revealed: found.revealed | 0, flags: found.flags | 0, blast: found.blast ? 1 : 0 }
+        : { bx, by, revealed: 0, flags: 0, blast: 0 };
+    }
+    row.revealed = Math.max(0, row.revealed + dRev);
+    row.flags = Math.max(0, row.flags + dFlag);
+    if (blast) row.blast = 1;
+    this.sql().exec(
+      `INSERT INTO bins (bx, by, revealed, flags, blast) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(bx, by) DO UPDATE SET
+         revealed = excluded.revealed,
+         flags = excluded.flags,
+         blast = excluded.blast`,
+      bx,
+      by,
+      row.revealed,
+      row.flags,
+      row.blast,
+    );
+    this.dirtyBins.set(id, row);
+  }
+
+  onSweep(ws, att) {
+    if (String(this.env?.TEST_HOOKS) !== "1" || this.boardSize > 48 || this.phase !== "play") {
+      ws.send(JSON.stringify({ t: "no", reason: "bounds" }));
+      return;
+    }
+    const row = this.sql().exec(`SELECT * FROM players WHERE id = ?`, att.id).toArray()[0];
+    if (!row) return;
+    const hidden = [];
+    for (let y = 0; y < this.boardSize; y++) {
+      for (let x = 0; x < this.boardSize; x++) {
+        if (this.isMineAt(x, y)) continue;
+        const cell = this.sql().exec(`SELECT kind FROM cells WHERE x = ? AND y = ?`, x, y).toArray()[0];
+        if (cell && cell.kind !== 3) continue;
+        hidden.push([x, y]);
+      }
+    }
+    if (hidden.length <= 1) {
+      const last = hidden[0] || [-1, -1];
+      ws.send(JSON.stringify({ t: "left", x: last[0], y: last[1] }));
+      return;
+    }
+    const last = hidden.pop();
+    const color = att.color;
+    let opened = 0;
+    txn(this.ctx, () => {
+      for (const [x, y] of hidden) {
+        const prev = this.sql().exec(`SELECT kind FROM cells WHERE x = ? AND y = ?`, x, y).toArray()[0];
+        const n = countMines({ isMine: (cx, cy) => this.isMineAt(cx, cy) }, x, y);
+        this.sql().exec(
+          `INSERT INTO cells (x, y, kind, n, color) VALUES (?, ?, 1, ?, ?)
+           ON CONFLICT(x, y) DO UPDATE SET kind = 1, n = excluded.n, color = excluded.color`,
+          x,
+          y,
+          n,
+          color,
+        );
+        this.bumpBin(x, y, 1, prev && prev.kind === 3 ? -1 : 0, 0);
+        opened++;
+      }
+      this.metaAdd("cleared", opened);
+      this.metaAdd("roundCleared", opened);
+      const player = this.runtimeFor(row);
+      player.score = (row.score | 0) + opened;
+      player.clears = (row.clears | 0) + opened;
+      this.sql().exec(
+        `UPDATE players SET score = ?, clears = ?, updated = ? WHERE id = ?`,
+        player.score,
+        player.clears,
+        Date.now(),
+        att.id,
+      );
+    });
+    this.pushMapDelta();
+    this.broadcastAll({
+      t: "presence",
+      stats: this.publicStats(),
+      players: this.roster(),
+    });
+    ws.send(JSON.stringify({ t: "left", x: last[0], y: last[1], n: opened }));
   }
 
   isMineAt(x, y) {
@@ -836,6 +1161,15 @@ export class Board {
 
   overView() {
     if (!this.over) return null;
+    if (this.over.win) {
+      return {
+        ...this.over,
+        best: { ms: this.bestMs, round: this.bestRound, name: this.bestName },
+        history: this.history(8),
+        fame: this.fame(8),
+        stats: this.publicStats(),
+      };
+    }
     const craters = minesAround((x, y) => this.isMineAt(x, y), this.over.x, this.over.y).map((cell) => ({
       x: cell.x,
       y: cell.y,
@@ -932,15 +1266,17 @@ function cellsFromResult(result, color, field) {
   return cells;
 }
 
-function sanitizeView(v) {
+function sanitizeView(v, size) {
   if (!v) return null;
   const x0 = v.x0;
   const y0 = v.y0;
   const x1 = v.x1;
   const y1 = v.y1;
-  if (![x0, y0, x1, y1].every((n) => Number.isInteger(n) && Math.abs(n) <= WORLD)) return null;
+  const span = size || boardSpan();
+  if (![x0, y0, x1, y1].every((n) => Number.isInteger(n))) return null;
   if (x1 < x0 || y1 < y0) return null;
   if (x1 - x0 > VIEW_MAX || y1 - y0 > VIEW_MAX) return null;
+  if (x0 < -VIEW_MAX || y0 < -VIEW_MAX || x1 > span + VIEW_MAX || y1 > span + VIEW_MAX) return null;
   return { x0, y0, x1, y1 };
 }
 
@@ -1054,20 +1390,33 @@ class SqlField {
   reveal(x, y, n) {
     const prev = this.read(x, y);
     const kind = n < 0 ? 2 : 1;
-    const keep = prev && prev.kind !== 3;
+    const wasFlag = !!(prev && prev.kind === 3);
+    const wasOpen = !!(prev && prev.kind && prev.kind !== 3);
+    const keep = wasOpen;
     const cell = { kind, n, color: keep ? prev.color : "" };
     this.cache.set(key(x, y), cell);
-    this.writes.push({ x, y, kind, n, color: cell.color, keep: !!keep, del: false });
+    this.writes.push({
+      x,
+      y,
+      kind,
+      n,
+      color: cell.color,
+      keep: !!keep,
+      del: false,
+      dRev: wasOpen ? 0 : 1,
+      dFlag: wasFlag ? -1 : 0,
+      blast: n < 0 ? 1 : 0,
+    });
   }
 
   setFlag(x, y) {
     this.cache.set(key(x, y), { kind: 3, n: 0, color: "" });
-    this.writes.push({ x, y, kind: 3, n: 0, keep: false, del: false });
+    this.writes.push({ x, y, kind: 3, n: 0, keep: false, del: false, dRev: 0, dFlag: 1, blast: 0 });
   }
 
   clearFlag(x, y) {
     this.cache.set(key(x, y), EMPTY);
-    this.writes.push({ x, y, del: true });
+    this.writes.push({ x, y, del: true, dRev: 0, dFlag: -1, blast: 0 });
   }
 
   flush(color) {
@@ -1082,6 +1431,7 @@ class SqlField {
       );
     }
     for (const w of this.writes) {
+      if (w.dRev || w.dFlag || w.blast) this.board.bumpBin(w.x, w.y, w.dRev || 0, w.dFlag || 0, w.blast || 0);
       if (w.del) {
         sql.exec(`DELETE FROM cells WHERE x = ? AND y = ?`, w.x, w.y);
         continue;
@@ -1101,11 +1451,21 @@ class SqlField {
 
   commitOverrides() {
     for (const o of this.overrideWrites) {
-      this.board.overrides.set(key(o.x, o.y), o.mine);
+      const k = key(o.x, o.y);
+      const prevBit = this.board.overrides.has(k)
+        ? (this.board.overrides.get(k) ? 1 : 0)
+        : (deterministicMine(this.board.seed, o.x, o.y) ? 1 : 0);
+      const nextBit = o.mine ? 1 : 0;
+      if (prevBit !== nextBit) this.board.mineDelta += nextBit ? 1 : -1;
+      this.board.overrides.set(k, nextBit);
+    }
+    if (this.overrideWrites.length) {
+      this.board.metaSet("mine_delta", String(this.board.mineDelta));
     }
   }
 }
 
 function clampCoord(n) {
-  return Math.max(-WORLD, Math.min(WORLD, n | 0));
+  const size = boardSpan();
+  return Math.max(0, Math.min(size - 1, n | 0));
 }

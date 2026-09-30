@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#140e0a" />
-  <meta name="description" content="One shared minesweeper round. Everybody digs. One mine blows it for everyone." />
+  <meta name="description" content="One shared 1,000 by 1,000 minesweeper round. Everybody digs. Clear the field together, or one mine blows it for everyone." />
   <meta property="og:title" content="minesSwept — one board, everybody" />
   <meta property="og:description" content="One shared minesweeper round. One mine blows it for everyone." />
   <meta property="og:image" content="https://mines.telep.io/og.png" />
@@ -26,6 +26,10 @@
     <h1>mines<em>Swept</em></h1>
     <p class="live"><span class="pip" id="pip"></span><span id="online">tuning in</span></p>
     <p class="survived" id="survived">Round #1 survived 00:00:00</p>
+    <div class="progress-track" id="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Board cleared">
+      <span id="progress"></span>
+    </div>
+    <p class="progress-label" id="progress-label">0% clear</p>
   </header>
 
   <section class="ticket" aria-label="Score">
@@ -51,6 +55,9 @@
     <h2 class="subhead">Hall of shame</h2>
     <p class="best" id="best">No round has ended yet.</p>
     <ol id="shame"></ol>
+    <h2 class="subhead">Hall of fame</h2>
+    <ol id="fame"></ol>
+    <p class="fame-empty" id="fame-empty">Nobody has cleared a board yet.</p>
     <p class="legal"><a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></p>
   </section>
 
@@ -67,11 +74,14 @@
   </section>
 
   <div class="over" id="over" hidden>
-    <p class="over-kicker">Game over</p>
+    <p class="over-kicker" id="over-kicker">Game over</p>
     <p class="over-name" id="over-name">Someone</p>
     <p class="over-line" id="over-line"></p>
+    <ol id="over-tops"></ol>
     <p class="over-next" id="over-next">Next round in 15s</p>
   </div>
+
+  <canvas id="mini" width="104" height="104" aria-label="Where you are on the board"></canvas>
 
   <div class="dock">
     <p id="coords" class="coords">0, 0</p>
@@ -79,7 +89,7 @@
       <button type="button" id="flag-mode" aria-pressed="false">Flag</button>
       <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
       <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
-      <button type="button" id="origin">Origin</button>
+      <button type="button" id="origin">Board</button>
       <button type="button" id="share">Share</button>
       <button type="button" id="sound" aria-pressed="false">Sound</button>
       <button type="button" id="chat-toggle" aria-controls="chat" aria-expanded="false">Chat</button>
@@ -87,7 +97,7 @@
     </div>
   </div>
 
-  <p class="hint" id="hint">Tap to dig. Hold to flag. One mine blows the round for everyone.</p>
+  <p class="hint" id="hint">Tap to dig. Hold to flag. Double-tap a spot to zoom in. Clear every safe cell and everyone wins.</p>
   <p class="toast" id="toast" role="status"></p>
   <div id="live" class="sr" aria-live="polite"></div>
   <script src="/client.js" type="module"></script>
