@@ -27,6 +27,8 @@ let dpr = 1;
 let hover = null;
 let flagMode = false;
 let me = { id: "", name: "…", color: "#e4b15a", score: 0, clears: 0, booms: 0, cooldownUntil: 0 };
+let roundState = { n: 1, startedAt: 0, phase: "play", online: 0, nextAt: 0 };
+let roundTicked = false;
 let audioOn = localStorage.getItem("minesswept.sound") === "1";
 let actx = null;
 let ws = null;
@@ -165,7 +167,7 @@ function connect() {
 
 setInterval(() => {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send("ping");
-}, 25000);
+}, 10000);
 
 function onMsg(msg) {
   if (msg.t === "welcome") {
@@ -176,7 +178,10 @@ function onMsg(msg) {
     paintWho(msg.players || []);
     paintFeed(msg.feed?.[0]);
     applySnapshot(msg);
-    $("online").textContent = `${msg.stats.online} sweeping`;
+    takeStats(msg.stats);
+    paintHistory(msg.history, msg.stats?.best);
+    if (msg.chat) for (const line of msg.chat) addChat(line);
+    if (msg.over) showOver(msg.over);
     return;
   }
   if (msg.t === "snapshot") {
@@ -187,15 +192,8 @@ function onMsg(msg) {
   if (msg.t === "delta") {
     applyCells(msg.cells || [], true);
     if (msg.event) paintFeed(msg.event);
-    if (msg.stats) paintHud(msg.stats);
+    if (msg.stats) takeStats(msg.stats);
     if (msg.leaderboard) paintLeaders(msg.leaderboard);
-    if (msg.event?.type === "boom") {
-      const own = msg.event.id ? msg.event.id === me.id : msg.event.name === me.name;
-      if (own || cellInView(msg.event.x, msg.event.y)) {
-        punch();
-        boom(own);
-      }
-    }
     if (msg.event?.type === "clear" && msg.event.n > 12) chime();
     return;
   }
@@ -204,16 +202,28 @@ function onMsg(msg) {
     me = { ...me, ...msg };
     localStorage.setItem("minesswept.name", me.name);
     paintYou();
+    if (msg.spared === "grace") toast("The field is still settling.");
+    if (msg.spared === "shield") toast("You blew the last round. This one isn't yours to end.");
     if (msg.cooldownUntil > Date.now() && msg.cooldownUntil !== wasCool) {
-      toast("Mine. The rest of the field keeps going.");
-      $("live").textContent = "You hit a mine. Short cooldown.";
+      $("live").textContent = "Short cooldown.";
     }
     return;
   }
   if (msg.t === "presence") {
-    if (msg.stats) paintHud(msg.stats);
+    if (msg.stats) takeStats(msg.stats);
     paintWho(msg.players || []);
-    $("online").textContent = `${msg.stats.online} sweeping`;
+    return;
+  }
+  if (msg.t === "over") {
+    showOver(msg);
+    return;
+  }
+  if (msg.t === "round") {
+    showRound(msg);
+    return;
+  }
+  if (msg.t === "chat" && msg.msg) {
+    addChat(msg.msg);
     return;
   }
   if (msg.t === "cursors") {
@@ -228,9 +238,12 @@ function onMsg(msg) {
       flagged: "Unflag it first.",
       chord: "Those flags don't add up.",
       revealed: "Already open.",
-      name: "Use at least two letters.",
+      name: "Pick another name.",
       packed: "Too many sweepers. Try again in a minute.",
       server: "The field hiccuped. Try that again.",
+      over: "This round is already over.",
+      blocked: "Message not sent",
+      chat: "Slow down a little.",
     };
     toast(lines[msg.reason] || "Couldn't do that.");
   }
@@ -274,14 +287,140 @@ function noteCursor(p) {
 function paintYou() {
   $("name").textContent = me.name;
   $("score").textContent = fmt(me.score);
-  $("personal").textContent = `${fmt(me.clears)} dug · ${fmt(me.booms)} ${me.booms === 1 ? "mine" : "mines"}`;
+  const blew = me.booms === 1 ? "blew 1 round" : `blew ${fmt(me.booms)} rounds`;
+  $("personal").textContent = `${fmt(me.clears)} dug · ${blew}`;
+}
+
+function clock(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return [h, m, sec].map((n) => String(n).padStart(2, "0")).join(":");
+}
+
+function takeStats(stats) {
+  paintHud(stats);
+  if (!stats) return;
+  if (stats.round) roundState.n = stats.round;
+  if (stats.startedAt) roundState.startedAt = stats.startedAt;
+  if (stats.phase) roundState.phase = stats.phase;
+  roundState.online = stats.online | 0;
+  roundState.nextAt = stats.nextAt || roundState.nextAt;
+  paintRound();
+}
+
+function paintRound() {
+  const el = $("survived");
+  if (!el) return;
+  if (roundState.phase === "over") {
+    const left = Math.max(0, Math.ceil((roundState.nextAt - Date.now()) / 1000));
+    const next = $("over-next");
+    if (next) next.textContent = left > 0 ? `Next round in ${left}s` : "New ground…";
+    el.textContent = `Round #${roundState.n} is over`;
+    if (left === 0 && !roundTicked) {
+      roundTicked = true;
+      send({ t: "tick" });
+    }
+    return;
+  }
+  const elapsed = roundState.startedAt ? Date.now() - roundState.startedAt : 0;
+  const people = roundState.online === 1 ? "1 would lose" : `${fmt(roundState.online)} would lose`;
+  el.textContent = `Round #${roundState.n} survived ${clock(elapsed)} · ${people}`;
 }
 
 function paintHud(stats) {
   paintYou();
   if (!stats) return;
-  $("everyone").innerHTML = `<strong>${fmt(stats.cleared)}</strong> dug together`;
+  const dug = stats.roundCleared != null ? stats.roundCleared : stats.cleared;
+  $("everyone").innerHTML = `<strong>${fmt(dug)}</strong> dug this round`;
   if (alive) $("online").textContent = `${stats.online} sweeping`;
+  if (stats.best) paintHistory(null, stats.best);
+}
+
+function paintHistory(rows, best) {
+  if (best && $("best")) {
+    $("best").textContent = best.ms
+      ? `Longest round #${best.round} survived ${clock(best.ms)}`
+      : "No round has ended yet.";
+  }
+  if (!rows || !$("shame")) return;
+  const ol = $("shame");
+  ol.replaceChildren();
+  for (const row of rows) {
+    const li = document.createElement("li");
+    const who = document.createElement("span");
+    who.style.color = row.color || "#e4b15a";
+    who.textContent = row.name;
+    const meta = document.createElement("span");
+    meta.textContent = `#${row.n} · ${clock(row.durationMs)} · ${fmt(row.cleared)}`;
+    li.append(who, meta);
+    ol.appendChild(li);
+  }
+}
+
+function showOver(msg) {
+  roundState.phase = "over";
+  roundState.n = msg.round || roundState.n;
+  roundState.nextAt = msg.nextAt || roundState.nextAt;
+  roundState.online = msg.online | 0;
+  roundTicked = false;
+  const banner = $("over");
+  banner.hidden = false;
+  $("over-name").textContent = msg.name || "Someone";
+  $("over-name").style.color = msg.color || "#d4533a";
+  $("over-line").textContent = msg.line || "";
+  if (msg.cells) applyCells(msg.cells, true);
+  if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
+    cam.x = msg.x + 0.5;
+    cam.y = msg.y + 0.5;
+    scheduleView();
+  }
+  paintHistory(msg.history, msg.best);
+  if (msg.stats) takeStats(msg.stats);
+  punch();
+  boom(true);
+  paintRound();
+}
+
+function showRound(msg) {
+  roundState = {
+    n: msg.round || roundState.n + 1,
+    startedAt: msg.startedAt || Date.now(),
+    phase: "play",
+    online: msg.stats?.online | 0,
+    nextAt: 0,
+  };
+  roundTicked = false;
+  cells.clear();
+  flashes.clear();
+  $("over").hidden = true;
+  me.score = 0;
+  me.clears = 0;
+  paintYou();
+  if (msg.stats) takeStats(msg.stats);
+  if (msg.leaderboard) paintLeaders(msg.leaderboard);
+  paintHistory(msg.history, msg.best || msg.stats?.best);
+  paintRound();
+}
+
+function addChat(m) {
+  if (!m || m.body == null) return;
+  const log = $("chat-log");
+  if ([...log.children].some((li) => li.dataset.id === String(m.id))) return;
+  const li = document.createElement("li");
+  if (m.id != null) li.dataset.id = String(m.id);
+  if (m.kind === "system") li.className = "system";
+  const who = document.createElement("span");
+  who.className = "who-name";
+  who.style.color = m.color || "#e4b15a";
+  who.textContent = m.kind === "system" ? "Field" : (m.name || "Someone");
+  const body = document.createElement("span");
+  body.textContent = m.body;
+  li.append(who, body);
+  log.append(li);
+  while (log.children.length > 100) log.firstChild.remove();
+  log.scrollTop = log.scrollHeight;
 }
 
 function paintLeaders(rows) {
@@ -550,6 +689,7 @@ function draw() {
     $("coords").textContent = coord;
   }
   paintCool(now);
+  paintRound();
   requestAnimationFrame(draw);
 }
 
@@ -807,17 +947,37 @@ $("origin").addEventListener("click", () => {
   cam.y = 0.5;
   scheduleView();
 });
+function setChat(open) {
+  $("chat").classList.toggle("open", open);
+  $("chat").classList.toggle("shut", !open);
+  const btn = $("chat-toggle");
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
+  btn.setAttribute("aria-pressed", open ? "true" : "false");
+  if (open && matchMedia("(max-width: 800px)").matches) setLeaderboard(false);
+}
+
 function setLeaderboard(open) {
   $("notes").classList.toggle("open", open);
   $("notes").classList.toggle("shut", !open);
   const btn = $("notes-toggle");
   btn.setAttribute("aria-expanded", open ? "true" : "false");
   btn.setAttribute("aria-pressed", open ? "true" : "false");
+  if (open && matchMedia("(max-width: 800px)").matches) setChat(false);
 }
 
 setLeaderboard(!matchMedia("(max-width: 800px)").matches);
 $("notes-toggle").addEventListener("click", () => setLeaderboard(!$("notes").classList.contains("open")));
 $("close-notes").addEventListener("click", () => setLeaderboard(false));
+$("chat-toggle").addEventListener("click", () => setChat(!$("chat").classList.contains("open")));
+$("close-chat").addEventListener("click", () => setChat(false));
+$("chat-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const input = $("chat-input");
+  const text = input.value;
+  if (!text.trim()) return;
+  send({ t: "chat", text });
+  input.value = "";
+});
 
 addEventListener("pointerdown", () => primeAudio(), true);
 addEventListener("keydown", () => primeAudio(), true);

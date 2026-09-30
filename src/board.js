@@ -13,6 +13,9 @@ import {
 } from "./game.js";
 import { cleanName, colorFromId, nameFromId, validPlayerId } from "./names.js";
 import { renderShareCard } from "./png.js";
+import { checkChatRate, CHAT_KEEP, prepareChat } from "./chat.js";
+import { containsSlur } from "./slurs.js";
+import { INTERMISSION_MS, minesAround, shameLine, spareReason } from "./round.js";
 
 const MAX_SOCKETS = 500;
 const MAX_PER_IP = 8;
@@ -73,6 +76,24 @@ export class Board {
       PRIMARY KEY (x, y)
     )`);
     sql.exec(`CREATE INDEX IF NOT EXISTS players_score ON players(score)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS rounds (
+      n INTEGER PRIMARY KEY,
+      by_id TEXT,
+      by_name TEXT,
+      by_color TEXT,
+      started INTEGER NOT NULL,
+      ended INTEGER NOT NULL,
+      cleared INTEGER NOT NULL,
+      online INTEGER NOT NULL
+    )`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS chat (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at INTEGER NOT NULL,
+      name TEXT,
+      color TEXT,
+      body TEXT NOT NULL,
+      kind TEXT NOT NULL
+    )`);
   }
 
   loadCore() {
@@ -90,6 +111,29 @@ export class Board {
       this.metaSet("feed", "[]");
     }
     this.seed = Number(seed) >>> 0;
+    this.round = Number(this.metaGet("round")) || 0;
+    this.startedAt = Number(this.metaGet("started")) || Date.now();
+    this.phase = this.metaGet("phase") || "play";
+    this.shield = this.metaGet("shield") || "";
+    this.bestMs = Number(this.metaGet("best_ms")) || 0;
+    this.bestRound = Number(this.metaGet("best_round")) || 0;
+    this.bestName = this.metaGet("best_name") || "";
+    this.nextAt = Number(this.metaGet("nextAt")) || 0;
+    try {
+      this.over = JSON.parse(this.metaGet("over") || "null");
+    } catch {
+      this.over = null;
+    }
+    if (!this.round) {
+      this.round = 1;
+      this.phase = "play";
+      this.startedAt = Date.now();
+      this.metaSet("round", "1");
+      this.metaSet("phase", "play");
+      this.metaSet("started", String(this.startedAt));
+      this.metaSet("roundCleared", "0");
+      this.metaSet("shield", "");
+    }
     this.overrides = new Map();
     for (const row of sql.exec(`SELECT x, y, mine FROM overrides`).toArray()) {
       this.overrides.set(key(row.x, row.y), row.mine ? 1 : 0);
@@ -99,6 +143,11 @@ export class Board {
       if (!Array.isArray(this.feed)) this.feed = [];
     } catch {
       this.feed = [];
+    }
+    if (this.phase === "over" && this.nextAt && Date.now() >= this.nextAt) {
+      this.beginRound();
+    } else if (this.phase === "over" && this.nextAt) {
+      this.armAlarm(this.nextAt);
     }
   }
 
@@ -181,7 +230,12 @@ export class Board {
     this.pushPresence();
   }
 
+  alarm() {
+    this.maybeAdvance();
+  }
+
   onMessage(ws, msg) {
+    this.maybeAdvance();
     const att = ws.deserializeAttachment() || {};
     if (msg.t === "hello") return this.hello(ws, att, msg);
     if (!att.hello) {
@@ -193,6 +247,8 @@ export class Board {
     if (msg.t === "name") return this.onName(ws, att, msg);
     if (msg.t === "reveal") return this.onReveal(ws, att, msg);
     if (msg.t === "flag") return this.onFlag(ws, att, msg);
+    if (msg.t === "chat") return this.onChat(ws, att, msg);
+    if (msg.t === "tick") return;
   }
 
   hello(ws, att, msg) {
@@ -203,8 +259,9 @@ export class Board {
     const now = Date.now();
     const existing = this.sql().exec(`SELECT * FROM players WHERE id = ?`, msg.id).toArray()[0];
     const color = existing?.color || colorFromId(msg.id);
-    const requested = cleanName(msg.name);
-    const name = requested || existing?.name || nameFromId(msg.id);
+    const requested = acceptableName(msg.name);
+    const kept = existing && !containsSlur(existing.name) ? existing.name : "";
+    const name = requested || kept || nameFromId(msg.id);
     if (!existing) {
       this.sql().exec(
         `INSERT INTO players (id, name, color, score, clears, booms, cool, updated) VALUES (?, ?, ?, 0, 0, 0, 0, ?)`,
@@ -239,6 +296,9 @@ export class Board {
       feed: this.feed,
       cells: this.cellsIn(view.x0, view.y0, view.x1, view.y1),
       cursors: this.cursorsIn(view.x0, view.y0, view.x1, view.y1, row.id),
+      chat: this.recentChat(),
+      history: this.history(8),
+      over: this.phase === "over" ? this.overView() : null,
     }));
     this.pushPresence();
   }
@@ -306,7 +366,7 @@ export class Board {
   }
 
   onName(ws, att, msg) {
-    const name = cleanName(msg.name);
+    const name = acceptableName(msg.name);
     if (!name) {
       ws.send(JSON.stringify({ t: "no", reason: "name" }));
       return;
@@ -320,6 +380,10 @@ export class Board {
   }
 
   onReveal(ws, att, msg) {
+    if (this.phase === "over") {
+      ws.send(JSON.stringify({ t: "no", reason: "over" }));
+      return;
+    }
     if (!inBounds(msg.x, msg.y)) {
       ws.send(JSON.stringify({ t: "no", reason: "bounds" }));
       return;
@@ -334,16 +398,25 @@ export class Board {
     const field = new SqlField(this);
     const margin = CHUNK;
     field.prefetch(msg.x - margin, msg.y - margin, msg.x + margin, msg.y + margin);
-    const result = attemptDig(field, player, msg.x, msg.y, now);
+    const reason = spareReason(now, this.startedAt, this.shield, att.id);
+    const result = attemptDig(field, player, msg.x, msg.y, now, {
+      spare: Boolean(reason),
+      spareReason: reason,
+    });
     if (result.error) {
       ws.send(JSON.stringify({ t: "no", reason: result.error, until: result.until || 0 }));
       return;
     }
     this.persistPlay(att, player, field, result, now);
     this.emitPlay(ws, att, player, field, result);
+    if (result.booms?.length) this.finishRound(att, field, result, now);
   }
 
   onFlag(ws, att, msg) {
+    if (this.phase === "over") {
+      ws.send(JSON.stringify({ t: "no", reason: "over" }));
+      return;
+    }
     if (!inBounds(msg.x, msg.y)) {
       ws.send(JSON.stringify({ t: "no", reason: "bounds" }));
       return;
@@ -390,7 +463,10 @@ export class Board {
         now,
         att.id,
       );
-      if (gained) this.metaAdd("cleared", gained);
+      if (gained) {
+        this.metaAdd("cleared", gained);
+        this.metaAdd("roundCleared", gained);
+      }
       if (found) this.metaAdd("booms", found);
       if (gained || found) {
         const event = {
@@ -433,6 +509,7 @@ export class Board {
       clears: player.clears | 0,
       booms: player.booms | 0,
       cooldownUntil: stamp(player.cooldownUntil),
+      spared: result.spared || "",
     }));
   }
 
@@ -518,10 +595,16 @@ export class Board {
   publicStats() {
     return {
       cleared: Number(this.metaGet("cleared")) || 0,
+      roundCleared: Number(this.metaGet("roundCleared")) || 0,
       booms: Number(this.metaGet("booms")) || 0,
       flags: Number(this.metaGet("flags")) || 0,
       online: this.onlineCount(),
       born: Number(this.metaGet("born")) || 0,
+      round: this.round,
+      startedAt: this.startedAt,
+      phase: this.phase,
+      nextAt: this.phase === "over" ? this.nextAt : 0,
+      best: { ms: this.bestMs, round: this.bestRound, name: this.bestName },
     };
   }
 
@@ -536,6 +619,250 @@ export class Board {
       clears: row.clears | 0,
       booms: row.booms | 0,
     }));
+  }
+
+  maybeAdvance() {
+    if (this.phase !== "over") return;
+    if (Date.now() + 40 < this.nextAt) return;
+    this.beginRound();
+  }
+
+  armAlarm(when) {
+    const storage = this.ctx.storage;
+    if (!storage || typeof storage.setAlarm !== "function") return;
+    Promise.resolve(storage.setAlarm(when)).catch(() => {});
+  }
+
+  finishRound(att, field, result, now) {
+    const boom = result.booms[0];
+    const cleared = Number(this.metaGet("roundCleared")) || 0;
+    const duration = Math.max(0, now - this.startedAt);
+    const online = Math.max(1, this.onlineCount());
+    const line = shameLine({
+      name: att.name,
+      online,
+      round: this.round,
+      durationMs: duration,
+      cleared,
+    });
+    txn(this.ctx, () => {
+      this.sql().exec(
+        `INSERT INTO rounds (n, by_id, by_name, by_color, started, ended, cleared, online)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(n) DO UPDATE SET
+           by_id = excluded.by_id,
+           by_name = excluded.by_name,
+           by_color = excluded.by_color,
+           started = excluded.started,
+           ended = excluded.ended,
+           cleared = excluded.cleared,
+           online = excluded.online`,
+        this.round,
+        att.id,
+        att.name,
+        att.color,
+        this.startedAt,
+        now,
+        cleared,
+        online,
+      );
+      if (duration >= this.bestMs) {
+        this.bestMs = duration;
+        this.bestRound = this.round;
+        this.bestName = att.name;
+        this.metaSet("best_ms", String(duration));
+        this.metaSet("best_round", String(this.round));
+        this.metaSet("best_name", att.name);
+      }
+      this.phase = "over";
+      this.nextAt = now + INTERMISSION_MS;
+      this.over = {
+        id: att.id,
+        name: att.name,
+        color: att.color,
+        round: this.round,
+        x: boom.x,
+        y: boom.y,
+        cleared,
+        online,
+        durationMs: duration,
+        line,
+        nextAt: this.nextAt,
+      };
+      this.metaSet("phase", "over");
+      this.metaSet("nextAt", String(this.nextAt));
+      this.metaSet("over", JSON.stringify(this.over));
+    });
+    this.armAlarm(this.nextAt);
+    const craters = minesAround((x, y) => field.isMine(x, y), boom.x, boom.y).map((cell) => ({
+      x: cell.x,
+      y: cell.y,
+      k: "m",
+      n: 0,
+      c: att.color,
+    }));
+    this.broadcastAll({
+      t: "over",
+      ...this.over,
+      cells: craters,
+      stats: this.publicStats(),
+      best: { ms: this.bestMs, round: this.bestRound, name: this.bestName },
+      history: this.history(8),
+    });
+    this.postChat({ kind: "system", name: "Field", color: att.color, body: line });
+  }
+
+  beginRound() {
+    if (this.phase !== "over") return;
+    const blower = this.over?.id || "";
+    const now = Date.now();
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+    const seed = String((buf[0] || 1) >>> 0);
+    this.phase = "play";
+    this.round += 1;
+    this.startedAt = now;
+    this.shield = blower;
+    this.nextAt = 0;
+    this.over = null;
+    this.seed = Number(seed) >>> 0;
+    this.overrides = new Map();
+    this.feed = [];
+    txn(this.ctx, () => {
+      this.sql().exec(`DELETE FROM cells`);
+      this.sql().exec(`DELETE FROM overrides`);
+      this.sql().exec(`UPDATE players SET score = 0, clears = 0, cool = 0`);
+      this.metaSet("seed", seed);
+      this.metaSet("round", String(this.round));
+      this.metaSet("started", String(now));
+      this.metaSet("phase", "play");
+      this.metaSet("shield", blower);
+      this.metaSet("nextAt", "0");
+      this.metaSet("over", "null");
+      this.metaSet("roundCleared", "0");
+      this.metaSet("feed", "[]");
+    });
+    for (const runtime of this.runtime.values()) {
+      runtime.score = 0;
+      runtime.clears = 0;
+      runtime.cooldownUntil = 0;
+    }
+    const stats = this.publicStats();
+    this.broadcastAll({
+      t: "round",
+      round: this.round,
+      startedAt: this.startedAt,
+      stats,
+      leaderboard: this.leaderboard(),
+      history: this.history(8),
+      best: stats.best,
+    });
+    this.postChat({
+      kind: "system",
+      name: "Field",
+      color: "#e4b15a",
+      body: `Round #${this.round} is open. Fresh dirt. Don't be the one.`,
+    });
+  }
+
+  onChat(ws, att, msg) {
+    const now = Date.now();
+    if (!checkChatRate(att.chatAt, now)) {
+      ws.send(JSON.stringify({ t: "no", reason: "chat" }));
+      return;
+    }
+    const prepared = prepareChat(msg.text);
+    att.chatAt = now;
+    ws.serializeAttachment({ ...att, chatAt: now });
+    if (prepared.error) {
+      ws.send(JSON.stringify({ t: "no", reason: prepared.error }));
+      return;
+    }
+    this.postChat({ kind: "user", name: att.name, color: att.color, body: prepared.body });
+  }
+
+  postChat(entry) {
+    const now = Date.now();
+    this.sql().exec(
+      `INSERT INTO chat (at, name, color, body, kind) VALUES (?, ?, ?, ?, ?)`,
+      now,
+      entry.name || "",
+      entry.color || "",
+      entry.body,
+      entry.kind === "system" ? "system" : "user",
+    );
+    const row = this.sql().exec(`SELECT id, at, name, color, body, kind FROM chat ORDER BY id DESC LIMIT 1`).toArray()[0];
+    const keep = this.sql().exec(`SELECT id FROM chat ORDER BY id DESC LIMIT 1 OFFSET ?`, CHAT_KEEP).toArray()[0];
+    if (keep) this.sql().exec(`DELETE FROM chat WHERE id <= ?`, keep.id);
+    this.broadcastAll({
+      t: "chat",
+      msg: {
+        id: row.id,
+        at: row.at,
+        name: row.name,
+        color: row.color,
+        body: row.body,
+        kind: row.kind,
+      },
+    });
+  }
+
+  recentChat() {
+    return this.sql().exec(
+      `SELECT id, at, name, color, body, kind FROM chat ORDER BY id DESC LIMIT ?`,
+      CHAT_KEEP,
+    ).toArray().reverse();
+  }
+
+  history(limit) {
+    return this.sql().exec(
+      `SELECT n, by_name, by_color, started, ended, cleared, online FROM rounds ORDER BY n DESC LIMIT ?`,
+      limit,
+    ).toArray().map((row) => ({
+      n: row.n,
+      name: row.by_name,
+      color: row.by_color,
+      durationMs: Math.max(0, Number(row.ended) - Number(row.started)),
+      cleared: row.cleared | 0,
+      online: row.online | 0,
+    }));
+  }
+
+  isMineAt(x, y) {
+    const hit = this.overrides.get(key(x, y));
+    if (hit != null) return hit === 1;
+    return deterministicMine(this.seed, x, y);
+  }
+
+  overView() {
+    if (!this.over) return null;
+    const craters = minesAround((x, y) => this.isMineAt(x, y), this.over.x, this.over.y).map((cell) => ({
+      x: cell.x,
+      y: cell.y,
+      k: "m",
+      n: 0,
+      c: this.over.color,
+    }));
+    return {
+      ...this.over,
+      cells: craters,
+      best: { ms: this.bestMs, round: this.bestRound, name: this.bestName },
+      history: this.history(8),
+      stats: this.publicStats(),
+    };
+  }
+
+  broadcastAll(packet) {
+    const data = JSON.stringify(packet);
+    for (const socket of this.ctx.getWebSockets()) {
+      const att = socket.deserializeAttachment();
+      if (!att?.hello) continue;
+      try {
+        socket.send(data);
+      } catch {
+        /* closed */
+      }
+    }
   }
 
   statsResponse() {
@@ -565,6 +892,12 @@ export class Board {
 function stamp(n) {
   const v = typeof n === "bigint" ? Number(n) : Number(n);
   return Number.isFinite(v) ? Math.trunc(v) : 0;
+}
+
+function acceptableName(input) {
+  const name = cleanName(input);
+  if (!name || containsSlur(name)) return null;
+  return name;
 }
 
 function publicYou(row, runtime) {

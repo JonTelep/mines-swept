@@ -4,15 +4,15 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#140e0a" />
-  <meta name="description" content="One infinite minesweeper board. Everyone plays it at once. No account." />
+  <meta name="description" content="One shared minesweeper round. Everybody digs. One mine blows it for everyone." />
   <meta property="og:title" content="minesSwept — one board, everybody" />
-  <meta property="og:description" content="An infinite minesweeper board the whole internet digs together. No account. Reveals stick." />
+  <meta property="og:description" content="One shared minesweeper round. One mine blows it for everyone." />
   <meta property="og:image" content="https://mines.telep.io/og.png" />
   <meta property="og:url" content="https://mines.telep.io" />
   <meta property="og:type" content="website" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="minesSwept — one board, everybody" />
-  <meta name="twitter:description" content="An infinite minesweeper board the whole internet digs together." />
+  <meta name="twitter:description" content="One shared minesweeper round. One mine blows it for everyone." />
   <meta name="twitter:image" content="https://mines.telep.io/og.png" />
   <title>minesSwept</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -25,18 +25,19 @@
   <header class="top">
     <h1>mines<em>Swept</em></h1>
     <p class="live"><span class="pip" id="pip"></span><span id="online">tuning in</span></p>
+    <p class="survived" id="survived">Round #1 survived 00:00:00</p>
   </header>
 
   <section class="ticket" aria-label="Score">
     <button type="button" id="name" class="name">…</button>
     <p class="score" id="score">0</p>
     <p class="score-label">your score</p>
-    <p class="personal" id="personal">0 dug · 0 mines</p>
+    <p class="personal" id="personal">0 dug · blew 0 rounds</p>
     <div class="cool" id="cool" hidden>
       <span id="cool-fill"></span>
       <em id="cool-label">in the crater</em>
     </div>
-    <p class="everyone" id="everyone"><strong>0</strong> dug together</p>
+    <p class="everyone" id="everyone"><strong>0</strong> dug this round</p>
   </section>
 
   <section class="notes" id="notes" aria-label="Leaderboard">
@@ -47,8 +48,30 @@
     <ol id="leaders"></ol>
     <div class="who" id="who"></div>
     <p class="ticker" id="ticker">The ground is quiet.</p>
+    <h2 class="subhead">Hall of shame</h2>
+    <p class="best" id="best">No round has ended yet.</p>
+    <ol id="shame"></ol>
     <p class="legal"><a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></p>
   </section>
+
+  <section class="chat shut" id="chat" aria-label="Chat">
+    <div class="notes-head">
+      <h2>Chat</h2>
+      <button type="button" id="close-chat">Close</button>
+    </div>
+    <ol id="chat-log"></ol>
+    <form id="chat-form" autocomplete="off">
+      <input id="chat-input" maxlength="200" placeholder="Say something" aria-label="Chat message" />
+      <button type="submit">Send</button>
+    </form>
+  </section>
+
+  <div class="over" id="over" hidden>
+    <p class="over-kicker">Game over</p>
+    <p class="over-name" id="over-name">Someone</p>
+    <p class="over-line" id="over-line"></p>
+    <p class="over-next" id="over-next">Next round in 15s</p>
+  </div>
 
   <div class="dock">
     <p id="coords" class="coords">0, 0</p>
@@ -59,11 +82,12 @@
       <button type="button" id="origin">Origin</button>
       <button type="button" id="share">Share</button>
       <button type="button" id="sound" aria-pressed="false">Sound</button>
+      <button type="button" id="chat-toggle" aria-controls="chat" aria-expanded="false">Chat</button>
       <button type="button" id="notes-toggle" aria-controls="notes" aria-expanded="false">Leaderboard</button>
     </div>
   </div>
 
-  <p class="hint" id="hint">Tap to dig. Hold to flag. Everyone is on this same board.</p>
+  <p class="hint" id="hint">Tap to dig. Hold to flag. One mine blows the round for everyone.</p>
   <p class="toast" id="toast" role="status"></p>
   <div id="live" class="sr" aria-live="polite"></div>
   <script src="/client.js" type="module"></script>

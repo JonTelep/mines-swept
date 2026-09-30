@@ -12,4 +12,4 @@ deploy: install
 	npx wrangler deploy
 
 test: install
-	node --test --test-timeout 180000 test/game.test.js test/multiplayer.test.js
+	node --test --test-concurrency=1 --test-timeout 180000 test/game.test.js test/filter.test.js test/multiplayer.test.js test/social.test.js

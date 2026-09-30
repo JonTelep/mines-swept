@@ -169,11 +169,51 @@ function seal(field, changes) {
   }
 }
 
-function floodFrom(field, x, y, max, changes) {
+function noteNumber(changes, x, y, n) {
+  const fresh = changes.cells.find((c) => c.x === x && c.y === y);
+  if (fresh) {
+    fresh.n = n;
+    return;
+  }
+  const rev = changes.revisions.find((c) => c.x === x && c.y === y);
+  if (rev) rev.n = n;
+  else changes.revisions.push({ x, y, n });
+}
+
+function reviseAround(field, x, y, changes) {
+  for (const [nx, ny] of neighbors(x, y)) {
+    if (!field.isRevealed(nx, ny) || field.isBoom(nx, ny)) continue;
+    const nn = countMines(field, nx, ny);
+    field.reveal(nx, ny, nn);
+    noteNumber(changes, nx, ny, nn);
+  }
+}
+
+function releaseMine(field, x, y, changes) {
+  const dest = findRelocation(field, x, y);
+  field.setOverride(x, y, false);
+  changes.overrides.push({ x, y, mine: 0 });
+  if (dest) {
+    field.setOverride(dest.x, dest.y, true);
+    changes.overrides.push({ x: dest.x, y: dest.y, mine: 1 });
+    changes.relocated = { x, y, toX: dest.x, toY: dest.y };
+  } else {
+    changes.relocated = { x, y, toX: x, toY: y, removed: true };
+  }
+  reviseAround(field, x, y, changes);
+  if (dest) reviseAround(field, dest.x, dest.y, changes);
+}
+
+function floodFrom(field, x, y, max, changes, spare, spareReason) {
   if (!inBounds(x, y) || field.isFlag(x, y) || field.isRevealed(x, y)) return;
   if (field.isMine(x, y)) {
-    boom(field, x, y, changes);
-    return;
+    if (spare) {
+      if (!isVirgin(field, x, y)) changes.spared = spareReason || "grace";
+      releaseMine(field, x, y, changes);
+    } else {
+      boom(field, x, y, changes);
+      return;
+    }
   }
   const queue = [[x, y]];
   const seen = new Set();
@@ -209,18 +249,14 @@ export function dig(field, x, y, opts = {}) {
 
   const changes = emptyChanges();
   const max = Math.max(1, opts.max ?? DEFAULT_FLOOD_MAX);
+  const spare = Boolean(opts.spare);
 
-  if (field.isMine(x, y) && isVirgin(field, x, y)) {
-    const dest = findRelocation(field, x, y);
-    if (dest) {
-      field.setOverride(x, y, false);
-      field.setOverride(dest.x, dest.y, true);
-      changes.overrides.push({ x, y, mine: 0 }, { x: dest.x, y: dest.y, mine: 1 });
-      changes.relocated = { x, y, toX: dest.x, toY: dest.y };
-    }
+  if (field.isMine(x, y) && (isVirgin(field, x, y) || spare)) {
+    if (!isVirgin(field, x, y)) changes.spared = opts.spareReason || "grace";
+    releaseMine(field, x, y, changes);
   }
 
-  floodFrom(field, x, y, max, changes);
+  floodFrom(field, x, y, max, changes, spare, opts.spareReason);
   return changes;
 }
 
@@ -237,7 +273,7 @@ function chord(field, x, y, opts) {
   for (const [nx, ny] of neigh) {
     if (field.isFlag(nx, ny) || field.isRevealed(nx, ny)) continue;
     const before = changes.cells.length;
-    floodFrom(field, nx, ny, Math.max(1, budget), changes);
+    floodFrom(field, nx, ny, Math.max(1, budget), changes, Boolean(opts.spare), opts.spareReason);
     budget -= changes.cells.length - before;
     if (budget < 1) break;
   }
@@ -283,19 +319,20 @@ export function applyScore(player, result) {
   const gained = result.cells?.length || 0;
   player.clears += gained;
   player.score += gained;
-  if (result.booms?.length) {
-    player.booms += 1;
-    player.score = Math.max(0, player.score - BOOM_PENALTY);
-  }
+  if (result.booms?.length) player.booms += 1;
 }
 
-export function attemptDig(field, player, x, y, now) {
+export function attemptDig(field, player, x, y, now, opts = {}) {
+  if (opts.phase === "over") return { error: "over" };
   const gate = checkRevealAllowed(player, now);
   if (gate.error) return { error: gate.error, until: gate.until };
-  const result = dig(field, x, y, { max: gate.max });
+  const result = dig(field, x, y, {
+    max: gate.max,
+    spare: Boolean(opts.spare),
+    spareReason: opts.spareReason || "",
+  });
   if (!result.error) {
     player.cellTokens = Math.max(0, player.cellTokens - (result.cells?.length || 0));
-    if (result.booms?.length) player.cooldownUntil = now + COOLDOWN_MS;
     applyScore(player, result);
   }
   return result;

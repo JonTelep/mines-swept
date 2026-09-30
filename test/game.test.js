@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  BOOM_PENALTY,
   CHUNK,
   attemptDig,
   attemptFlag,
@@ -175,7 +174,7 @@ test("server-side validation rejects bad coords, cooldown, and rate limits befor
   assert.equal(flags.isFlag(3, 9), false);
 });
 
-test("a boom costs points and starts a personal cooldown without ending the field", () => {
+test("a frontier mine booms that cell and does not start a personal cooldown", () => {
   const field = createMemoryField(5);
   paint(field, -2, -2, 2, 2, false);
   field.setOverride(0, 0, true);
@@ -186,12 +185,24 @@ test("a boom costs points and starts a personal cooldown without ending the fiel
   const before = player.score;
   const boom = attemptDig(field, player, 0, 0, 10);
   assert.equal(boom.booms.length, 1);
-  assert.equal(player.score, Math.max(0, before - BOOM_PENALTY));
+  assert.equal(player.score, before);
   assert.equal(player.booms, 1);
   assert.equal(player.clears, before);
-  assert.ok(player.cooldownUntil > 10);
-  const next = attemptDig(field, player, -1, 0, player.cooldownUntil - 1);
-  assert.equal(next.error, "cooldown");
-  assert.equal(field.isRevealed(-1, 0), false);
+  assert.equal(player.cooldownUntil, 0);
+  consistent(field);
+});
+
+test("a spared dig moves a frontier mine instead of blowing the round", () => {
+  const field = createMemoryField(5);
+  paint(field, -2, -2, 2, 2, false);
+  field.setOverride(0, 0, true);
+  const player = freshPlayer(0);
+  attemptDig(field, player, 1, 0, 0);
+  const spared = attemptDig(field, player, 0, 0, 10, { spare: true, spareReason: "grace" });
+  assert.equal(spared.booms.length, 0);
+  assert.equal(spared.spared, "grace");
+  assert.equal(field.isMine(0, 0), false);
+  assert.equal(field.isRevealed(0, 0), true);
+  assert.equal(player.booms, 0);
   consistent(field);
 });
