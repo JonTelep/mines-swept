@@ -187,7 +187,28 @@ test("two clients see each other's moves, and the field survives a restart", asy
     assert.equal(stats.status, 200);
     const body = await stats.json();
     assert.equal(typeof body.cleared, "number");
+    assert.equal(typeof body.booms, "number");
+    assert.equal(typeof body.flags, "number");
+    assert.equal(typeof body.round, "number");
+    assert.ok(body.visitors >= 2);
     assert.equal(JSON.stringify(body).includes("seed"), false);
+
+    const historyRes = await fetch(`http://127.0.0.1:${PORT}/api/stats/history?range=24h`);
+    assert.equal(historyRes.status, 200);
+    const history = await historyRes.json();
+    assert.equal(history.range, "24h");
+    assert.equal(history.grain, "hour");
+    assert.ok(history.allTime.digs >= 1);
+    assert.ok(history.allTime.flags >= 1);
+    assert.ok(history.allTime.sessions >= 2);
+    assert.ok(history.allTime.visitors >= 2);
+    assert.ok(history.today.digs >= 1);
+    assert.equal(JSON.stringify(history).includes("player-ada"), false);
+    assert.equal(history.live.cleared, body.cleared);
+
+    const page = await fetch(`http://127.0.0.1:${PORT}/stats`);
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /The field, so far/);
     ada.ws.close();
     bea.ws.close();
   } finally {

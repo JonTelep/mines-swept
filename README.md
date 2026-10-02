@@ -72,7 +72,7 @@ Unit tests cover chunk-and-seed mine generation, flood fill, mine relocation, de
    ```
 
    The first successful deploy creates the `mines.telep.io` DNS record on that zone. The zone has to be in the same Cloudflare account. If you only want the `*.workers.dev` hostname first, comment those three lines out, deploy, then put them back.
-4. Open https://mines.telep.io. Share cards are generated at `/og.png`. Live totals are at `/api/stats`.
+4. Open https://mines.telep.io. Share cards are generated at `/og.png`. Live totals are at `/api/stats`. The public history page is at `/stats`, and the series is at `/api/stats/history`.
 
 Deploys restart the Durable Object and disconnect open sockets. History and chat stay. The first boot of this version, if it finds a board that is not already 1,000 by 1,000, ends that open round without writing a shame row, keeps the hall of shame and the chat, deletes the deploy-check player `deploycheck-bot01`, and starts the next round on a fresh 1,000 by 1,000 board. Players with zero digs are left off the public leaderboard.
 
@@ -96,7 +96,7 @@ Durable Objects with the SQLite backend are included on the Workers Free plan. T
 | Durable Object duration | 13,000 GB-s / day | Hibernation means duration accrues only while a message is handled, not while people sit connected. |
 | Durable Object CPU | 30 s / invocation by default | A single dig is capped at 400 cells. |
 | SQLite rows read | 5 million / day | Viewport reads and per-cell lookups. |
-| SQLite rows written | 100,000 / day | One row per revealed or flagged cell, plus one row per chat line. This is the tight quota. |
+| SQLite rows written | 100,000 / day | One row per revealed or flagged cell, plus one row per chat line. This is the tight quota. Stats add a small, separate bill, described below. |
 | SQLite stored | 5 GB / account, 1 GB / object | Opened cells, mine overrides, and at most 15,625 overview bins. One fully opened round is on the order of tens of megabytes. |
 
 Past a free-tier cap, that class of operation fails until 00:00 UTC. The client reconnects and the board is still there.
@@ -106,6 +106,16 @@ A 1,000×1,000 round has about 825,000 safe cells. Clearing every one writes one
 A rough fit: 80 people, each sending a cursor every couple of seconds and digging every few seconds, is on the order of 10,000 billed Durable Object requests per hour. Chat is on that same budget. Incoming messages bill 20:1, so a person chatting at the cap (one line every two seconds) adds about 1,800 billed requests an hour. A few dozen people talking steadily is fine for an afternoon. A crowd all chatting at the cap also writes one SQLite row per line, and 100,000 writes a day is only a little over one write a second on average, so a busy room can spend the write quota before the request quota. A few hours of a popular post fits. A couple hundred people, panning and typing all day, can spend the daily budget. The $5 Workers Paid plan raises the ceiling (1 million Durable Object requests included per month, then $0.15 per million) and is not part of this deploy.
 
 Per connection the server allows a handful of digs per second, a cell budget that refills, and at most 8 sockets from one IP. The object stops accepting new sockets around 500.
+
+### Launch stats
+
+`/api/stats` is unchanged aside from one added field, `visitors`, the count of anonymous player ids. Hour and day totals live at `/api/stats/history?range=24h|7d|30d|all` and on the `/stats` page. Each bucket counts unique players, new players, WebSocket sessions, digs (one per reveal, not per cell), cells cleared, flags placed, bombs exploded, chat messages, rounds blown, rounds won, and the peak number of people online.
+
+Digs, flags, clears, bombs, chats, sessions, and the peak sit in memory on the Durable Object. They flush together about every 45 seconds, when the hour changes, when a round ends, when a new player arrives, or once a burst passes 40 actions or 80 cleared cells. A flush writes the current hour row and the current day row: two SQLite rows, and only while someone is actually playing. A busy day is on the order of a few thousand of those writes, a small slice of the free-plan write budget. Idle time writes nothing. Unique players are not counted per click. The first time an anonymous player id shows up in an hour, and the first time that day, the object writes one `stat_seen` row and adds one to that bucket. A reconnect in the same hour does not write again. Old hourly seen-rows are deleted a few dozen at a time so that table cannot grow without a bound. A read of `/stats` does not write; the page includes counters that have not been flushed yet.
+
+The first boot copies what the board already knows into those buckets, once. Finished rounds become clears, bombs, wins, and peak online on the day and hour they ended. The open round's clears are added on the day it started. Flags have no timestamps, so the running flag total is placed on the day the board was born. The same is done for any clears or bombs the rounds table does not already explain. Players count as a visitor and a new player on the day they were last seen, which is the only clock the `players` table has. Digs and sessions from before this version are unknown and stay at zero. The copy does not update `meta`, `rounds`, `players`, `chat`, cells, or the hall of shame. A second boot does not add them again.
+
+Counts use that same player id. The connecting IP is still checked for the per-network socket cap, and it is not stored in the stats tables.
 
 ## License
 
