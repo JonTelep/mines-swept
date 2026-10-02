@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#140e0a" />
+  <meta name="description" content="Live numbers from the one shared minesSwept board. Players, digs, bombs, and how the field has gone since it opened." />
+  <meta property="og:title" content="minesSwept stats" />
+  <meta property="og:description" content="Players, digs, and bombs on the one shared minesweeper board." />
+  <meta property="og:image" content="https://mines.telep.io/og.png" />
+  <meta property="og:url" content="https://mines.telep.io/stats" />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="minesSwept stats" />
+  <meta name="twitter:description" content="Players, digs, and bombs on the one shared minesweeper board." />
+  <meta name="twitter:image" content="https://mines.telep.io/og.png" />
+  <title>minesSwept stats</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/stats.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="mast">
+      <div>
+        <p class="kicker" id="since">One board, since it opened</p>
+        <h1>mines<em>Swept</em></h1>
+      </div>
+      <a class="play" href="/">Play the board</a>
+    </header>
+    <p class="lede" id="lede">The field, so far. Everyone who shows up digs the same million cells.</p>
+    <p class="status" id="status" role="status">Loading the field…</p>
+
+    <section class="headlines" aria-label="Headline totals">
+      <div class="stat moss"><b id="h-players">–</b><span>Players</span></div>
+      <div class="stat"><b id="h-digs">–</b><span>Digs</span></div>
+      <div class="stat crater"><b id="h-bombs">–</b><span>Bombs</span></div>
+      <div class="stat"><b id="h-cleared">–</b><span>Cells cleared</span></div>
+    </section>
+
+    <table class="compare">
+      <caption class="sr">Today against all time</caption>
+      <thead>
+        <tr><th>Metric</th><th>Today</th><th>All time</th></tr>
+      </thead>
+      <tbody id="compare"></tbody>
+    </table>
+
+    <section class="panel" aria-labelledby="chart-title">
+      <div class="panel-head">
+        <h2 id="chart-title">Over time</h2>
+        <div class="ranges" role="group" aria-label="Range">
+          <button type="button" data-range="24h">24 hours</button>
+          <button type="button" data-range="7d" aria-pressed="true">7 days</button>
+          <button type="button" data-range="30d">30 days</button>
+          <button type="button" data-range="all">All</button>
+        </div>
+      </div>
+      <div class="metrics" role="group" aria-label="Chart metric">
+        <button type="button" data-metric="cleared" aria-pressed="true">Cleared</button>
+        <button type="button" data-metric="digs">Digs</button>
+        <button type="button" data-metric="booms">Bombs</button>
+        <button type="button" data-metric="visitors">Players</button>
+        <button type="button" data-metric="flags">Flags</button>
+      </div>
+      <svg id="chart" viewBox="0 0 960 280" role="img" aria-labelledby="chart-summary"></svg>
+      <p id="chart-summary" class="chart-note">A bar for each hour or day.</p>
+    </section>
+
+    <section class="halls">
+      <div class="hall">
+        <h2>Hall of shame</h2>
+        <p class="best" id="best">No round has ended yet.</p>
+        <ol id="shame"></ol>
+        <p class="empty" id="shame-empty">Nobody has blown a round yet.</p>
+      </div>
+      <div class="hall">
+        <h2>Hall of fame</h2>
+        <ol id="fame"></ol>
+        <p class="empty" id="fame-empty">Nobody has cleared a board yet.</p>
+      </div>
+      <div class="hall">
+        <h2>On the board</h2>
+        <p class="best" id="live-line">Quiet just now.</p>
+        <ol id="leaders"></ol>
+        <p class="empty" id="leaders-empty">No scores yet this round.</p>
+      </div>
+    </section>
+    <p class="fine">Digs, sessions, and chat start with this version of the field. Earlier days are rebuilt from the rounds, the flags, and when each player was last on the board. Counts use the anonymous player id already stored for the game. IP addresses are not kept.</p>
+  </main>
+  <script src="/stats.js"></script>
+</body>
+</html>

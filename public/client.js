@@ -12,6 +12,10 @@ const NUM = {
   7: "#2a2118",
   8: "#6d5b49",
 };
+const HIDDEN_FILL = Array.from({ length: 20 }, (_, g) => `rgb(${54 + (g % 8)}, ${46 + (g % 5)}, ${34 + (g % 6)})`);
+const OPEN_FILL = Array.from({ length: 20 }, (_, g) => `rgb(${228 - (g % 10)}, ${208 - (g % 8)}, ${168 - (g % 6)})`);
+let frameDirty = true;
+let overShareText = "";
 
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const MONO = "ui-monospace, Menlo, Consolas, monospace";
@@ -64,6 +68,7 @@ function playerId() {
 }
 
 function resize() {
+  frameDirty = true;
   dpr = Math.min(2, devicePixelRatio || 1);
   cssW = innerWidth;
   cssH = innerHeight;
@@ -457,6 +462,7 @@ function applySnapshot(msg) {
 }
 
 function applyCells(list, flash) {
+  frameDirty = true;
   const now = performance.now();
   for (const c of list) {
     const k = c.x + "," + c.y;
@@ -620,6 +626,9 @@ function showOver(msg) {
   if (msg.stats) takeStats(msg.stats);
   punch();
   boom(true);
+  overShareText = msg.line || `${msg.name || "Someone"} hit a mine.`;
+  $("live").textContent = overShareText;
+  frameDirty = true;
   paintRound();
 }
 
@@ -645,6 +654,9 @@ function showWin(msg) {
     setTimeout(() => document.body.classList.remove("winflash"), 700);
   }
   fanfare();
+  overShareText = msg.line || "The board is clear.";
+  $("live").textContent = overShareText;
+  frameDirty = true;
   paintRound();
 }
 
@@ -689,6 +701,7 @@ function showRound(msg) {
   if (msg.stats) takeStats(msg.stats);
   if (msg.leaderboard) paintLeaders(msg.leaderboard);
   paintHistory(msg.history, msg.best || msg.stats?.best, msg.fame);
+  frameDirty = true;
   paintRound();
 }
 
@@ -774,7 +787,7 @@ function toast(text) {
 function punch() {
   if (reduceMotion) return;
   document.body.classList.add("boom");
-  setTimeout(() => document.body.classList.remove("boom"), 280);
+  setTimeout(() => document.body.classList.remove("boom"), 720);
 }
 
 function cellInView(x, y) {
@@ -930,8 +943,9 @@ function easeCam() {
       cam.z = goal.z;
       easeCam.live = false;
       scheduleView();
+      return true;
     }
-    return;
+    return false;
   }
   const wasFar = usesOverview();
   cam.x += dx * 0.28;
@@ -944,6 +958,7 @@ function easeCam() {
     lastView = "";
     scheduleView();
   }
+  return true;
 }
 
 function drawBoardEdge() {
@@ -1019,13 +1034,27 @@ function drawMinimap() {
 }
 
 function draw() {
-  easeCam();
+  const moved = easeCam();
+  const now = performance.now();
+  for (const [id, pin] of pins) if (now - pin.at > 12000) pins.delete(id);
+  for (const [id, cursor] of cursors) if (now - cursor.at > 6000) cursors.delete(id);
+  const fx = particles.length || flashes.size || cursors.size || pins.size || (press && press.hold && !press.moved);
+  if (moved || fx || frameDirty || mapDirty) paintFrame(now);
+  const sec = (Date.now() / 1000) | 0;
+  if (sec !== draw.sec) {
+    draw.sec = sec;
+    paintRound();
+  }
+  if (me.cooldownUntil > Date.now() || !$("cool").hidden) paintCool(now);
+  requestAnimationFrame(draw);
+}
+
+function paintFrame(now) {
+  frameDirty = false;
   document.body.classList.toggle("far", usesOverview());
   ctx.clearRect(0, 0, cssW, cssH);
   ctx.fillStyle = "#0c0907";
   ctx.fillRect(0, 0, cssW, cssH);
-
-  const now = performance.now();
   const far = usesOverview();
   if (far) {
     drawOverview();
@@ -1106,22 +1135,21 @@ function draw() {
     $("coords").textContent = coord;
   }
   drawMinimap();
-  paintCool(now);
-  paintRound();
-  requestAnimationFrame(draw);
 }
 
 function drawCell(sx, sy, size, x, y, cell, now) {
   const g = grit(x, y);
   if (!cell) {
-    ctx.fillStyle = `rgb(${54 + (g % 8)}, ${46 + (g % 5)}, ${34 + (g % 6)})`;
+    ctx.fillStyle = HIDDEN_FILL[g];
     ctx.fillRect(sx, sy, size, size);
-    ctx.fillStyle = "rgba(255, 236, 210, 0.05)";
-    ctx.fillRect(sx, sy, size, Math.max(1, size * 0.18));
+    if (size >= 14) {
+      ctx.fillStyle = "rgba(255, 236, 210, 0.05)";
+      ctx.fillRect(sx, sy, size, Math.max(1, size * 0.18));
+    }
     return;
   }
   if (cell.k === "f") {
-    ctx.fillStyle = `rgb(${54 + (g % 8)}, ${46 + (g % 5)}, ${34 + (g % 6)})`;
+    ctx.fillStyle = HIDDEN_FILL[g];
     ctx.fillRect(sx, sy, size, size);
     drawFlag(sx, sy, size, cell.c || "#e4b15a");
     return;
@@ -1132,7 +1160,7 @@ function drawCell(sx, sy, size, x, y, cell, now) {
     drawMine(sx, sy, size, cell.c || "#e4b15a");
     return;
   }
-  ctx.fillStyle = `rgb(${228 - (g % 10)}, ${208 - (g % 8)}, ${168 - (g % 6)})`;
+  ctx.fillStyle = OPEN_FILL[g];
   ctx.fillRect(sx, sy, size, size);
   const flash = flashes.get(x + "," + y);
   if (flash && flash > now && cell.c) {
@@ -1281,6 +1309,7 @@ canvas.addEventListener("pointermove", (e) => {
   if ((e.buttons & 4) || press?.middle) e.preventDefault();
   const [px, py] = localPoint(e);
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: px, y: py });
+  frameDirty = true;
   hover = cellAt(px, py);
   maybeCursor(hover[0], hover[1]);
 
@@ -1346,17 +1375,13 @@ canvas.addEventListener("pointerup", (e) => {
     return;
   }
   const nowTap = performance.now();
-  if (nowTap - lastTap.t < 450 && Math.hypot(px - lastTap.x, py - lastTap.y) < 28) {
-    clearTimeout(digTimer);
+  if (nowTap - lastTap.t < 320 && Math.hypot(px - lastTap.x, py - lastTap.y) < 28) {
     lastTap.t = 0;
     zoomAt(px, py, clamp(cam.z * 2, minZoom(), 78), false);
     return;
   }
   lastTap = { t: nowTap, x: px, y: py };
-  clearTimeout(digTimer);
-  digTimer = setTimeout(() => {
-    dig(cell[0], cell[1]);
-  }, 420);
+  dig(cell[0], cell[1]);
 });
 
 canvas.addEventListener("pointercancel", (e) => {
@@ -1402,13 +1427,19 @@ function maybeCursor(x, y) {
 }
 
 addEventListener("keydown", (e) => {
-  if (e.target.matches?.("input")) return;
+  if (e.target.matches?.("input, textarea")) return;
+  if ((e.key === " " || e.key === "Enter") && e.target.closest?.("button, a")) return;
   const step = 80 / cam.z;
   if (e.key === "ArrowLeft" || e.key === "a") cam.x -= step;
   else if (e.key === "ArrowRight" || e.key === "d") cam.x += step;
   else if (e.key === "ArrowUp" || e.key === "w") cam.y -= step;
   else if (e.key === "ArrowDown" || e.key === "s") cam.y += step;
-  else if (e.key === "f") toggleFlagMode();
+  else if (e.key === "f" || e.key === "F") toggleFlagMode();
+  else if ((e.key === " " || e.key === "Enter") && $("intro")?.hidden !== false) {
+    const [x, y] = cellAt(cssW / 2, cssH / 2);
+    if (flagMode) flag(x, y);
+    else dig(x, y);
+  }
   else if (e.key === "+" || e.key === "=") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) * 1.18, minZoom(), 78), false);
   else if (e.key === "-" || e.key === "_") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) / 1.18, minZoom(), 78), false);
   else if (e.key === "Escape") {
@@ -1429,8 +1460,11 @@ addEventListener("keydown", (e) => {
 
 function toggleFlagMode() {
   flagMode = !flagMode;
-  $("flag-mode").setAttribute("aria-pressed", flagMode ? "true" : "false");
-  canvas.style.cursor = flagMode ? "cell" : "crosshair";
+  const btn = $("flag-mode");
+  btn.setAttribute("aria-pressed", flagMode ? "true" : "false");
+  btn.textContent = flagMode ? "Flag on" : "Flag";
+  document.body.classList.toggle("flagging", flagMode);
+  frameDirty = true;
 }
 
 $("flag-mode").addEventListener("click", toggleFlagMode);
@@ -1500,23 +1534,37 @@ $("sound").addEventListener("click", () => {
   }
 });
 
-$("share").addEventListener("click", async () => {
-  const url = location.origin;
-  const text = `${me.name} — score ${fmt(me.score)}, ${fmt(me.clears)} dug on minesSwept. One board, everybody.`;
-  try {
-    if (navigator.share) {
-      await navigator.share({ title: "minesSwept", text, url });
-      return;
+function shareText(text) {
+  const url = location.origin + "/";
+  const full = text ? `${text} ${url}` : url;
+  const go = async () => {
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "minesSwept", text: text || "One shared minesweeper board.", url });
+        return;
+      }
+    } catch {
+      /* cancelled or unsupported */
     }
-  } catch {
-    /* cancelled or unsupported */
-  }
-  try {
-    await navigator.clipboard.writeText(`${text} ${url}`);
-    toast("Copied. Go cause a scene.");
-  } catch {
-    toast(url);
-  }
+    try {
+      await navigator.clipboard.writeText(full);
+      toast("Copied. Go cause a scene.");
+    } catch {
+      toast(url);
+    }
+  };
+  return go();
+}
+
+function defaultShare() {
+  const cleared = fmt(progress.cleared || 0);
+  return `Round #${roundState.n} on minesSwept. ${cleared} cells cleared together. One mine blows it for everyone.`;
+}
+
+$("share").addEventListener("click", () => shareText(defaultShare()));
+$("over-share").addEventListener("click", (e) => {
+  e.stopPropagation();
+  shareText(overShareText || defaultShare());
 });
 
 $("name").addEventListener("click", () => {
@@ -1548,8 +1596,35 @@ $("name").addEventListener("click", () => {
   input.addEventListener("blur", () => finish(true));
 });
 
+function openIntro() {
+  const el = $("intro");
+  if (!el) return;
+  el.hidden = false;
+  $("intro-go")?.focus();
+}
+
+function closeIntro() {
+  const el = $("intro");
+  if (!el || el.hidden) return;
+  el.hidden = true;
+  localStorage.setItem("minesswept.intro", "1");
+  hinted = false;
+  $("hint").classList.remove("gone");
+  setTimeout(dismissHint, 14000);
+}
+
+$("intro-go").addEventListener("click", closeIntro);
+$("how").addEventListener("click", () => {
+  setLeaderboard(false);
+  openIntro();
+});
+$("intro").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeIntro();
+});
+
 addEventListener("resize", resize);
 resize();
 connect();
 requestAnimationFrame(draw);
-setTimeout(dismissHint, 9000);
+if (localStorage.getItem("minesswept.intro") === "1") setTimeout(dismissHint, 14000);
+else openIntro();

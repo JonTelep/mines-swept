@@ -179,13 +179,21 @@ export async function renderShareCard(stats) {
   drawText(rgba, width, "ONE BOARD. EVERYBODY.", 118, 214, 4, moss);
 
   const dug = formatCount(stats.cleared || 0);
-  drawText(rgba, width, dug, 118, 300, 14, paper);
-  const numberWidth = measureText(dug, 14);
-  drawText(rgba, width, "DUG TOGETHER", 118 + numberWidth + 28, 362, 4, brass);
+  let scale = 14;
+  while (scale > 6 && measureText(dug, scale) > 640) scale -= 2;
+  drawText(rgba, width, dug, 118, 290, scale, paper);
+  const numberWidth = measureText(dug, scale);
+  const labelY = 290 + scale * 7 - 28;
+  const labelX = 118 + numberWidth + 28;
+  if (labelX < 980) drawText(rgba, width, "CELLS CLEARED", labelX, labelY, 4, brass);
 
-  const online = `${formatCount(stats.online || 0)} SWEEPING NOW`;
-  drawText(rgba, width, online, 118, 460, 4, paper);
-  drawText(rgba, width, "MINES.TELEP.IO", 760, 460, 4, crater);
+  const bombs = `${formatCount(stats.booms || 0)} BOMBS`;
+  const online = `${formatCount(stats.online || 0)} ON THE BOARD`;
+  drawText(rgba, width, bombs, 118, 448, 4, crater);
+  drawText(rgba, width, online, 118 + measureText(bombs, 4) + 40, 448, 4, moss);
+  const players = stats.visitors > 0 ? `${formatCount(stats.visitors)} PLAYERS` : "";
+  if (players) drawText(rgba, width, players, 118, 490, 3, paper);
+  drawText(rgba, width, "MINES.TELEP.IO", 760, players ? 490 : 448, 4, crater);
 
   return encodePNG(width, height, rgba);
 }

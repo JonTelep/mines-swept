@@ -19,12 +19,12 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <canvas id="field" aria-hidden="true"></canvas>
+  <canvas id="field" role="img" aria-label="Shared minesweeper board. Click or tap to dig. Hold or right-click to flag. Drag to pan."></canvas>
   <div class="veil" aria-hidden="true"></div>
 
   <header class="top">
     <h1>mines<em>Swept</em></h1>
-    <p class="live"><span class="pip" id="pip"></span><span id="online">tuning in</span></p>
+    <p class="live"><span class="pip" id="pip"></span><span id="online">tuning in</span> <a class="stats-link" href="/stats">Stats</a></p>
     <p class="survived" id="survived">Round #1 survived 00:00:00</p>
     <div class="progress-track" id="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Board cleared">
       <span id="progress"></span>
@@ -33,7 +33,7 @@
   </header>
 
   <section class="ticket" aria-label="Score">
-    <button type="button" id="name" class="name">…</button>
+    <button type="button" id="name" class="name" aria-label="Your name. Activate to change it.">…</button>
     <p class="score" id="score">0</p>
     <p class="score-label">your score</p>
     <p class="personal" id="personal">0 dug · blew 0 rounds</p>
@@ -58,7 +58,7 @@
     <h2 class="subhead">Hall of fame</h2>
     <ol id="fame"></ol>
     <p class="fame-empty" id="fame-empty">Nobody has cleared a board yet.</p>
-    <p class="legal"><a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></p>
+    <p class="legal"><button type="button" id="how">How to play</button> · <a href="/stats">Stats</a> · <a href="https://www.gnu.org/licenses/gpl-3.0.html">GPL-3.0</a></p>
   </section>
 
   <section class="chat shut" id="chat" aria-label="Chat">
@@ -79,6 +79,22 @@
     <p class="over-line" id="over-line"></p>
     <ol id="over-tops"></ol>
     <p class="over-next" id="over-next">Next round in 15s</p>
+    <button type="button" id="over-share">Share this</button>
+  </div>
+
+  <div class="intro" id="intro" hidden role="dialog" aria-modal="true" aria-labelledby="intro-title">
+    <div class="intro-card">
+      <p class="intro-kicker">One board. Everybody.</p>
+      <h2 id="intro-title">A million cells. One mine ends it for all of you.</h2>
+      <ul>
+        <li>Everyone who opens this is digging the same 1,000 by 1,000 board.</li>
+        <li><strong>Tap</strong> digs. <strong>Hold</strong>, right-click, or Flag marks a mine.</li>
+        <li><strong>Drag</strong> looks around. <strong>Pinch</strong> or + zooms. Other people show up as cursors.</li>
+      </ul>
+      <p class="intro-keys">Arrows move. F flags. Space digs the cell in the middle.</p>
+      <button type="button" id="intro-go">Start digging</button>
+      <p class="intro-more"><a href="/stats">Live stats</a></p>
+    </div>
   </div>
 
   <canvas id="mini" width="104" height="104" aria-label="Where you are on the board"></canvas>
@@ -97,9 +113,9 @@
     </div>
   </div>
 
-  <p class="hint" id="hint">Tap to dig. Hold to flag. Double-tap a spot to zoom in. Clear every safe cell and everyone wins.</p>
+  <p class="hint" id="hint">Tap to dig. Hold to flag. Drag to pan. One mine ends the round for everyone.</p>
   <p class="toast" id="toast" role="status"></p>
-  <div id="live" class="sr" aria-live="polite"></div>
+  <div id="live" class="sr" aria-live="assertive"></div>
   <script src="/client.js" type="module"></script>
 </body>
 </html>
