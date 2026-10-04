@@ -3,7 +3,11 @@
 // Unique people are the anonymous player id already stored on `players`.
 // Raw IPs are never written here.
 
-export const FLUSH_MS = 45_000;
+// A hibernating Durable Object is evicted after about 10s with no events, and
+// a pending alarm does not keep it in memory. The flush has to run first, or
+// the alarm wakes an empty ledger and the quiet stretch is gone.
+// https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/
+export const FLUSH_MS = 8_000;
 export const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
 

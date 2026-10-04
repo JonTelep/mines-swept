@@ -3,8 +3,11 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { Board } from "../src/board.js";
+import { setActiveSize } from "../src/game.js";
 import {
   DAY_MS,
+  FLUSH_MS,
   HOUR_MS,
   shouldFlushNow,
   StatsLedger,
@@ -395,4 +398,71 @@ test("an in-progress round is not counted twice while the board is between round
   const booms = days.reduce((sum, row) => sum + row.booms, 0);
   assert.equal(cleared, 80);
   assert.equal(booms, 1);
+});
+
+function openBoard() {
+  const db = new DatabaseSync(":memory:");
+  const alarms = [];
+  const ctx = {
+    storage: {
+      sql: sqlFor(db),
+      transactionSync(fn) {
+        fn();
+      },
+      setAlarm(when) {
+        alarms.push(when);
+      },
+    },
+    blockConcurrencyWhile(fn) {
+      return fn();
+    },
+    getWebSockets() {
+      return [];
+    },
+  };
+  const board = new Board(ctx, { BOARD_SIZE: "16" });
+  return { board, alarms, sql: ctx.storage.sql };
+}
+
+function hourDigs(sql) {
+  const row = sql.exec(
+    `SELECT COALESCE(SUM(digs), 0) AS digs, COALESCE(SUM(cleared), 0) AS cleared, COALESCE(SUM(flags), 0) AS flags
+     FROM stat_buckets WHERE grain = 'h'`,
+  ).toArray()[0];
+  return { digs: Number(row.digs), cleared: Number(row.cleared), flags: Number(row.flags) };
+}
+
+test("buffered stats flush inside the hibernation idle window and on disconnect", () => {
+  assert.ok(FLUSH_MS > 0);
+  assert.ok(FLUSH_MS < 10_000);
+  const { board, alarms, sql } = openBoard();
+  try {
+    const started = Date.now();
+    board.bumpStats({ digs: 3, cleared: 4, flags: 1 });
+    assert.equal(board.ledger.dirty, true);
+    assert.equal(hourDigs(sql).digs, 0);
+    assert.equal(alarms.length, 1);
+    assert.ok(alarms[0] >= started + FLUSH_MS - 20);
+    assert.ok(alarms[0] <= Date.now() + FLUSH_MS + 20);
+
+    board.webSocketClose();
+    assert.deepEqual(hourDigs(sql), { digs: 3, cleared: 4, flags: 1 });
+    assert.equal(board.ledger.dirty, false);
+    const day = sql.exec(`SELECT COALESCE(SUM(digs), 0) AS digs FROM stat_buckets WHERE grain = 'd'`).toArray()[0];
+    assert.equal(Number(day.digs), 3);
+
+    board.webSocketClose();
+    board.webSocketError();
+    assert.deepEqual(hourDigs(sql), { digs: 3, cleared: 4, flags: 1 });
+
+    board.bumpStats({ digs: 2, chats: 1 });
+    assert.equal(hourDigs(sql).digs, 3);
+    board.alarm();
+    assert.equal(hourDigs(sql).digs, 5);
+    const chats = sql.exec(`SELECT COALESCE(SUM(chats), 0) AS chats FROM stat_buckets WHERE grain = 'h'`).toArray()[0];
+    assert.equal(Number(chats.chats), 1);
+    assert.equal(board.ledger.dirty, false);
+  } finally {
+    setActiveSize(1000);
+  }
 });

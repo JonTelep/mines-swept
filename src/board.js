@@ -241,7 +241,7 @@ export class Board {
     this.writePieces(this.ledger.ensure(now));
     if (!this.ledger.add(partial)) return;
     // A new player is rare, and flushing here also checkpoints the digs
-    // they walked in on, so a restart does not drop the last minute.
+    // they walked in on.
     if ((partial.newPlayers | 0) > 0 || shouldFlushNow(this.ledger.pendingDay)) this.flushStats();
     else this.scheduleStats();
   }
@@ -414,6 +414,13 @@ export class Board {
 
   webSocketClose() {
     this.pushPresence();
+    // Close is often the last event before hibernation. Flush while the
+    // in-memory ledger is still this instance's.
+    this.flushStats();
+  }
+
+  webSocketError() {
+    this.flushStats();
   }
 
   alarm() {
