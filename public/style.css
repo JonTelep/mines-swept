@@ -48,6 +48,7 @@ button, input {
   height: 100%;
   display: block;
   touch-action: none;
+  -webkit-touch-callout: none;
   cursor: crosshair;
 }
 

@@ -1118,8 +1118,18 @@ function drawMinimap() {
   }
 }
 
+function knownOpen(x, y) {
+  const cell = cells.get(x + "," + y);
+  return !!cell && cell.k !== "f";
+}
+
 function finishHold(now) {
   if (!press || press.placed || press.moved || !press.hold) return;
+  if (knownOpen(press.cell[0], press.cell[1])) {
+    press.hold = false;
+    frameDirty = true;
+    return;
+  }
   if (now - press.t < HOLD_MS) return;
   if (usesOverview() || !inBoard(press.cell[0], press.cell[1])) return;
   press.placed = true;
@@ -1414,7 +1424,8 @@ canvas.addEventListener("pointerdown", (e) => {
     return;
   }
   if (e.button !== 0) return;
-  press = { x: px, y: py, cell: cellAt(px, py), t: performance.now(), moved: false, hold: true, id: e.pointerId };
+  const cell = cellAt(px, py);
+  press = { x: px, y: py, cell, t: performance.now(), moved: false, hold: !knownOpen(cell[0], cell[1]), id: e.pointerId };
 });
 
 canvas.addEventListener("pointermove", (e) => {
@@ -1462,7 +1473,10 @@ canvas.addEventListener("pointerup", (e) => {
   if (pointers.size < 2) pinch = null;
   if (!press || press.id !== e.pointerId) return;
   if (press.middle || e.button === 1) {
-    if (e.button === 1) press = null;
+    if (e.button === 1) {
+      press = null;
+      frameDirty = true;
+    }
     return;
   }
   if (e.button !== 0) return;
@@ -1473,6 +1487,7 @@ canvas.addEventListener("pointerup", (e) => {
   const px = press.x;
   const py = press.y;
   press = null;
+  frameDirty = true;
   if (placed || moved || pointers.size > 0) return;
   if (!inBoard(cell[0], cell[1])) return;
   if (usesOverview()) {
@@ -1495,7 +1510,10 @@ canvas.addEventListener("pointerup", (e) => {
 
 canvas.addEventListener("pointercancel", (e) => {
   pointers.delete(e.pointerId);
-  if (press?.id === e.pointerId) press = null;
+  if (press?.id === e.pointerId) {
+    press = null;
+    frameDirty = true;
+  }
 });
 
 canvas.addEventListener("wheel", (e) => {
