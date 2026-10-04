@@ -4,12 +4,13 @@ export const GRACE_MS = 20_000;
 export const INTERMISSION_MS = 15_000;
 export const BLAST_RADIUS = 14;
 
-// Untouched ground is already safe in the dig rules. On top of that, a round
-// cannot end during the opening grace, and the player who just blew a round
-// cannot be the one to end the next one. Both cases move the mine instead.
+// Untouched ground is already safe in the dig rules. A round also cannot end
+// during the opening grace: that dig moves the mine. "shield" is not a spare.
+// The player who blew the previous round is barred for the whole next round,
+// and the board rejects their dig instead of moving anything.
 export function spareReason(now, startedAt, shieldId, playerId) {
-  if (!startedAt || now < startedAt + GRACE_MS) return "grace";
   if (shieldId && playerId === shieldId) return "shield";
+  if (!startedAt || now < startedAt + GRACE_MS) return "grace";
   return "";
 }
 

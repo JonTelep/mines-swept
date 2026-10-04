@@ -487,6 +487,7 @@ export class Board {
     ws.serializeAttachment(next);
     ws.send(JSON.stringify({
       t: "welcome",
+      sitting: row.id === this.shield,
       you: publicYou(row, runtime),
       stats: this.publicStats(),
       leaderboard: this.leaderboard(),
@@ -606,6 +607,10 @@ export class Board {
       ws.send(JSON.stringify({ t: "no", reason: "bounds" }));
       return;
     }
+    if (this.shield && att.id === this.shield) {
+      ws.send(JSON.stringify({ t: "no", reason: "shield" }));
+      return;
+    }
     const row = this.sql().exec(`SELECT * FROM players WHERE id = ?`, att.id).toArray()[0];
     if (!row) return;
     const player = this.runtimeFor(row);
@@ -644,6 +649,10 @@ export class Board {
     }
     if (!inBounds(msg.x, msg.y)) {
       ws.send(JSON.stringify({ t: "no", reason: "bounds" }));
+      return;
+    }
+    if (this.shield && att.id === this.shield) {
+      ws.send(JSON.stringify({ t: "no", reason: "shield" }));
       return;
     }
     const row = this.sql().exec(`SELECT * FROM players WHERE id = ?`, att.id).toArray()[0];
@@ -1074,6 +1083,7 @@ export class Board {
       t: "round",
       round: this.round,
       startedAt: this.startedAt,
+      shield: this.shield || "",
       stats,
       leaderboard: this.leaderboard(),
       history: this.history(8),

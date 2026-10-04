@@ -80,6 +80,41 @@ body.flagging #field { cursor: cell; }
   transform: translateX(-50%);
   text-align: center;
   pointer-events: none;
+  z-index: 5;
+}
+
+.sit-out {
+  margin: 8px 0 0;
+  color: var(--crater);
+  font-style: italic;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+body.sitting #field { cursor: not-allowed; }
+
+.tools button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.reset-view {
+  pointer-events: auto;
+  position: relative;
+  z-index: 5;
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--brass);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 h1 {

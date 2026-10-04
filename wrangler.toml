@@ -22,6 +22,16 @@ new_sqlite_classes = ["Board"]
 
 # One-time: the telep.io zone must already be on this Cloudflare account.
 # The first successful deploy creates the mines.telep.io DNS record.
+# wrangler deploy replaces the whole route set, so every live custom domain
+# has to stay listed here or the next deploy detaches it.
 [[routes]]
 pattern = "mines.telep.io"
+custom_domain = true
+
+[[routes]]
+pattern = "minesswept.com"
+custom_domain = true
+
+[[routes]]
+pattern = "www.minesswept.com"
 custom_domain = true

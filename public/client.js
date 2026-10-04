@@ -1,5 +1,5 @@
 const canvas = document.getElementById("field");
-const ctx = canvas.getContext("2d");
+let ctx = canvas.getContext("2d");
 const $ = (id) => document.getElementById(id);
 
 const NUM = {
@@ -30,6 +30,9 @@ let boardSize = 1000;
 const BIN = 8;
 const mapCanvas = document.createElement("canvas");
 const mapCtx = mapCanvas.getContext("2d", { willReadFrequently: true });
+const overviewCanvas = document.createElement("canvas");
+const overviewCtx = overviewCanvas.getContext("2d");
+let overviewImage = null;
 let mapN = 0;
 let mapRev = new Uint8Array(0);
 let mapFlag = new Uint8Array(0);
@@ -53,6 +56,7 @@ let lastView = "";
 let viewTimer = 0;
 let toastTimer = 0;
 let hinted = false;
+let sitting = false;
 
 const pointers = new Map();
 let pinch = null;
@@ -128,9 +132,7 @@ function applyResize(box) {
     mini.style.height = css + "px";
   }
   if (first) {
-    const across = cssW < 700 ? 10 : 18;
-    cam.z = clamp(Math.round(cssW / across), Math.max(fitZoom(), 12), 48);
-    goal.z = cam.z;
+    cam.z = goal.z = playZoom();
     goal.x = cam.x;
     goal.y = cam.y;
     resize.did = true;
@@ -206,6 +208,38 @@ function fitBoard() {
   goal.x = center.x;
   goal.y = center.y;
   clampCamera(goal);
+}
+
+function playZoom() {
+  const across = cssW < 700 ? 10 : 18;
+  const fit = fitZoom();
+  const minZ = Number.isFinite(fit) ? Math.max(fit, 12) : 12;
+  const raw = Math.round(cssW / across);
+  const z = clamp(Number.isFinite(raw) && raw > 0 ? raw : 28, minZ, 48);
+  return Number.isFinite(z) && z > 0 ? z : 28;
+}
+
+function restoreContext() {
+  try {
+    const fresh = canvas.getContext("2d");
+    if (fresh) ctx = fresh;
+    ctx.setTransform(dpr || 1, 0, 0, dpr || 1, 0, 0);
+  } catch {
+    /* The context may still be lost. contextrestored tries again. */
+  }
+  frameDirty = true;
+}
+
+function resetView() {
+  const z = playZoom();
+  const center = viewCenter(z);
+  cam.x = goal.x = Number.isFinite(center.x) ? center.x : boardSize / 2;
+  cam.y = goal.y = Number.isFinite(center.y) ? center.y : boardSize / 2;
+  cam.z = goal.z = z;
+  easeCam.live = false;
+  restoreContext();
+  frameDirty = true;
+  scheduleView();
 }
 
 function ensureMap() {
@@ -394,6 +428,7 @@ function onMsg(msg) {
   if (msg.t === "welcome") {
     me = { ...me, ...msg.you };
     localStorage.setItem("minesswept.name", me.name);
+    setSitting(Boolean(msg.sitting));
     paintHud(msg.stats);
     paintLeaders(msg.leaderboard || []);
     paintWho(msg.players || []);
@@ -441,7 +476,10 @@ function onMsg(msg) {
     localStorage.setItem("minesswept.name", me.name);
     paintYou();
     if (msg.spared === "grace") toast("The field is still settling.");
-    if (msg.spared === "shield") toast("You blew the last round. This one isn't yours to end.");
+    if (msg.spared === "shield") {
+      setSitting(true);
+      toast("You're trolling, sit this one out.");
+    }
     if (msg.cooldownUntil > Date.now() && msg.cooldownUntil !== wasCool) {
       $("live").textContent = "Short cooldown.";
     }
@@ -482,7 +520,9 @@ function onMsg(msg) {
       over: "This round is already over.",
       blocked: "Message not sent",
       chat: "Slow down a little.",
+      shield: "You're trolling, sit this one out.",
     };
+    if (msg.reason === "shield") setSitting(true);
     toast(lines[msg.reason] || "Couldn't do that.");
   }
 }
@@ -743,8 +783,25 @@ function showRound(msg) {
   if (msg.stats) takeStats(msg.stats);
   if (msg.leaderboard) paintLeaders(msg.leaderboard);
   paintHistory(msg.history, msg.best || msg.stats?.best, msg.fame);
+  setSitting(Boolean(msg.shield) && msg.shield === me.id);
   frameDirty = true;
   paintRound();
+}
+
+function setSitting(on) {
+  sitting = Boolean(on);
+  document.body.classList.toggle("sitting", sitting);
+  const banner = $("sit-out");
+  if (banner) banner.hidden = !sitting;
+  const flagBtn = $("flag-mode");
+  if (flagBtn) flagBtn.disabled = sitting;
+  if (!sitting) return;
+  flagMode = false;
+  document.body.classList.remove("flagging");
+  if (flagBtn) {
+    flagBtn.setAttribute("aria-pressed", "false");
+    flagBtn.textContent = "Flag";
+  }
 }
 
 function addChat(m) {
@@ -951,6 +1008,10 @@ function burst(x, y, color) {
 
 function dig(x, y) {
   dismissHint();
+  if (sitting) {
+    toast("You're trolling, sit this one out.");
+    return;
+  }
   if (!inBoard(x, y)) return;
   if (flagMode) {
     send({ t: "flag", x, y });
@@ -963,6 +1024,10 @@ function dig(x, y) {
 
 function flag(x, y) {
   dismissHint();
+  if (sitting) {
+    toast("You're trolling, sit this one out.");
+    return;
+  }
   if (!inBoard(x, y)) return;
   send({ t: "flag", x, y });
   flagSound();
@@ -1047,18 +1112,136 @@ function drawBoardEdge() {
   ctx.stroke();
 }
 
+function terrainRGB(x, y, open) {
+  const g = grit(x, y);
+  if (open) return [228 - (g % 10), 208 - (g % 8), 168 - (g % 6)];
+  return [54 + (g % 8), 46 + (g % 5), 34 + (g % 6)];
+}
+
+function binRGB(x, y) {
+  if (!mapN) return null;
+  const bx = (x / BIN) | 0;
+  const by = (y / BIN) | 0;
+  if (bx < 0 || by < 0 || bx >= mapN || by >= mapN) return null;
+  const i = by * mapN + bx;
+  const blast = mapBlast[i];
+  const rev = mapRev[i];
+  const flag = mapFlag[i];
+  if (!blast && !rev && !flag) return null;
+  if (blast) return [212, 72, 48];
+  const t = Math.min(1, rev / 28);
+  let r = 46 + t * (214 - 46);
+  let g = 38 + t * (190 - 38);
+  let b = 28 + t * (142 - 28);
+  if (flag) {
+    const f = Math.min(1, flag / 6);
+    r = r * (1 - f) + 228 * f;
+    g = g * (1 - f) + 177 * f;
+    b = b * (1 - f) + 90 * f;
+  }
+  return [r, g, b];
+}
+
+// Rasterize the visible board once. Individual cell rects disappear into a flat
+// field at this zoom, and blitting the software-backed minimap canvas comes out
+// blank on phone GPUs. The grid is one pixel on each boundary that fits.
+function drawOverviewBitmap() {
+  const span = boardScreenSpan();
+  const dest = intersectViewport(span.x, span.y, span.size, span.size);
+  if (!(dest.w > 0.5 && dest.h > 0.5) || !(span.size > 0)) return;
+  const left = Math.max(0, Math.floor(dest.x));
+  const top = Math.max(0, Math.floor(dest.y));
+  const right = Math.min(cssW, Math.ceil(dest.x + dest.w));
+  const bottom = Math.min(cssH, Math.ceil(dest.y + dest.h));
+  const cw = right - left;
+  const ch = bottom - top;
+  if (cw < 1 || ch < 1) return;
+  let step = 1;
+  while ((cw / step) * (ch / step) > 450000) step *= 2;
+  const sw = Math.ceil(cw / step);
+  const sh = Math.ceil(ch / step);
+  if (overviewCanvas.width !== sw || overviewCanvas.height !== sh) {
+    overviewCanvas.width = sw;
+    overviewCanvas.height = sh;
+    overviewImage = null;
+  }
+  if (!overviewImage) overviewImage = overviewCtx.createImageData(sw, sh);
+  const data = overviewImage.data;
+  const z = Math.max(cam.z, 0.05);
+  let grid = 1;
+  while (grid * z < 4 && grid < 256) grid *= 2;
+  const half = (step * 0.5) / z;
+  let p = 0;
+  for (let j = 0; j < sh; j++) {
+    const sy = top + (j + 0.5) * step;
+    const wy = cam.y + (sy - cssH / 2) / z;
+    for (let i = 0; i < sw; i++) {
+      const sx = left + (i + 0.5) * step;
+      const wx = cam.x + (sx - cssW / 2) / z;
+      const cx = Math.floor(wx);
+      const cy = Math.floor(wy);
+      let r = 12;
+      let g = 9;
+      let b = 7;
+      if (inBoard(cx, cy)) {
+        const rgb = binRGB(cx, cy) || terrainRGB(cx, cy, false);
+        r = rgb[0];
+        g = rgb[1];
+        b = rgb[2];
+        const lineX = Math.floor((wx - half) / grid) !== Math.floor((wx + half) / grid);
+        const lineY = Math.floor((wy - half) / grid) !== Math.floor((wy + half) / grid);
+        if (lineX || lineY) {
+          r = 12;
+          g = 9;
+          b = 7;
+        }
+      }
+      data[p++] = r;
+      data[p++] = g;
+      data[p++] = b;
+      data[p++] = 255;
+    }
+  }
+  if (z >= 2) {
+    for (const cell of cells.values()) {
+      if (!cell || !inBoard(cell.x, cell.y)) continue;
+      const [sx, sy] = worldToScreen(cell.x, cell.y);
+      const x0 = Math.floor((sx - left) / step);
+      const y0 = Math.floor((sy - top) / step);
+      const x1 = Math.ceil((sx + z - left) / step);
+      const y1 = Math.ceil((sy + z - top) / step);
+      if (x1 <= 0 || y1 <= 0 || x0 >= sw || y0 >= sh) continue;
+      let rgb;
+      if (cell.k === "f") rgb = [228, 177, 90];
+      else if (cell.k === "m") rgb = [120, 48, 40];
+      else rgb = terrainRGB(cell.x, cell.y, true);
+      let xa = Math.max(0, x0);
+      let ya = Math.max(0, y0);
+      const xb = Math.min(sw, x1);
+      const yb = Math.min(sh, y1);
+      if (xb - xa >= 3) xa += 1;
+      if (yb - ya >= 3) ya += 1;
+      for (let y = ya; y < yb; y++) {
+        let o = (y * sw + xa) * 4;
+        for (let x = xa; x < xb; x++) {
+          data[o++] = rgb[0];
+          data[o++] = rgb[1];
+          data[o++] = rgb[2];
+          data[o++] = 255;
+        }
+      }
+    }
+  }
+  overviewCtx.putImageData(overviewImage, 0, 0);
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(overviewCanvas, 0, 0, sw, sh, left, top, cw, ch);
+  ctx.restore();
+}
+
 function drawOverview() {
   paintMapImage();
-  const { x, y, size } = boardScreenSpan();
-  const dest = intersectViewport(x, y, size, size);
-  if (dest.w > 0.5 && dest.h > 0.5 && size > 0) {
-    const sx = ((dest.x - x) / size) * mapCanvas.width;
-    const sy = ((dest.y - y) / size) * mapCanvas.height;
-    const sw = (dest.w / size) * mapCanvas.width;
-    const sh = (dest.h / size) * mapCanvas.height;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(mapCanvas, sx, sy, sw, sh, dest.x, dest.y, dest.w, dest.h);
-  }
+  drawOverviewBitmap();
   drawBoardEdge();
   const now = performance.now();
   for (const [id, pin] of pins) {
@@ -1160,8 +1343,10 @@ function draw() {
     draw.fails = 0;
   } catch (err) {
     draw.fails = (draw.fails || 0) + 1;
-    if (draw.fails === 1 || draw.fails % 60 === 0) console.error(err);
-    if (draw.fails % 15 === 0) frameDirty = true;
+    if (draw.fails === 1 || draw.fails % 30 === 0) console.error(err);
+    if (draw.fails === 2) restoreContext();
+    else if (draw.fails === 4) resetView();
+    if (draw.fails < 6 || draw.fails % 20 === 0) frameDirty = true;
   }
 }
 
@@ -1182,7 +1367,7 @@ function paintFrame(now) {
     ctx.rect(board.x, board.y, Math.max(0, board.w), Math.max(0, board.h));
     ctx.clip();
     const v = viewRect();
-    const gutter = cam.z > 22 ? 1.5 : 0;
+    const gutter = cam.z > 22 ? 1.5 : cam.z >= 4 ? 1 : 0;
     const x0 = Math.max(0, v.x0);
     const y0 = Math.max(0, v.y0);
     const x1 = Math.min(boardSize - 1, v.x1);
@@ -1425,7 +1610,7 @@ canvas.addEventListener("pointerdown", (e) => {
   }
   if (e.button !== 0) return;
   const cell = cellAt(px, py);
-  press = { x: px, y: py, cell, t: performance.now(), moved: false, hold: !knownOpen(cell[0], cell[1]), id: e.pointerId };
+  press = { x: px, y: py, cell, t: performance.now(), moved: false, hold: !sitting && !knownOpen(cell[0], cell[1]), id: e.pointerId };
 });
 
 canvas.addEventListener("pointermove", (e) => {
@@ -1456,6 +1641,10 @@ canvas.addEventListener("pointermove", (e) => {
     clearTimeout(digTimer);
   }
   if (press.moved) {
+    if (!Number.isFinite(cam.z) || cam.z <= 0) {
+      resetView();
+      return;
+    }
     cam.x -= (px - press.lx) / cam.z;
     cam.y -= (py - press.ly) / cam.z;
     clampCamera(cam);
@@ -1527,11 +1716,19 @@ canvas.addEventListener("wheel", (e) => {
 function zoomAt(px, py, next, immediate) {
   const z = clamp(next, fitZoom(), 78);
   const base = immediate || !easeCam.live ? cam : goal;
+  if (!Number.isFinite(z) || z <= 0 || !Number.isFinite(base.z) || base.z <= 0 || !Number.isFinite(px) || !Number.isFinite(py)) {
+    resetView();
+    return;
+  }
   const wx = base.x + (px - cssW / 2) / base.z;
   const wy = base.y + (py - cssH / 2) / base.z;
   goal.z = z;
   goal.x = wx - (px - cssW / 2) / z;
   goal.y = wy - (py - cssH / 2) / z;
+  if (!Number.isFinite(goal.x) || !Number.isFinite(goal.y) || !Number.isFinite(goal.z)) {
+    resetView();
+    return;
+  }
   clampCamera(goal);
   if (immediate) {
     cam.x = goal.x;
@@ -1539,6 +1736,7 @@ function zoomAt(px, py, next, immediate) {
     cam.z = goal.z;
     scheduleView();
   }
+  frameDirty = true;
 }
 
 let lastCursorSent = 0;
@@ -1556,6 +1754,10 @@ function maybeCursor(x, y) {
 addEventListener("keydown", (e) => {
   if (e.target.matches?.("input, textarea")) return;
   if ((e.key === " " || e.key === "Enter") && e.target.closest?.("button, a")) return;
+  if (!Number.isFinite(cam.z) || cam.z <= 0) {
+    resetView();
+    return;
+  }
   const step = 80 / cam.z;
   if (e.key === "ArrowLeft" || e.key === "a") cam.x -= step;
   else if (e.key === "ArrowRight" || e.key === "d") cam.x += step;
@@ -1586,6 +1788,7 @@ addEventListener("keydown", (e) => {
 });
 
 function toggleFlagMode() {
+  if (sitting) return;
   flagMode = !flagMode;
   const btn = $("flag-mode");
   btn.setAttribute("aria-pressed", flagMode ? "true" : "false");
@@ -1604,6 +1807,14 @@ $("zoom-out").addEventListener("click", () => {
   zoomAt(cssW / 2, cssH / 2, clamp(z / 1.45, fitZoom(), 78), false);
 });
 $("origin").addEventListener("click", () => fitBoard());
+$("reset-view").addEventListener("click", () => resetView());
+canvas.addEventListener("contextlost", (e) => {
+  e.preventDefault();
+});
+canvas.addEventListener("contextrestored", () => {
+  restoreContext();
+  resetView();
+});
 $("mini").addEventListener("pointerdown", (e) => {
   e.preventDefault();
   e.stopPropagation();
