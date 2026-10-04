@@ -32,18 +32,6 @@
     <p class="progress-label" id="progress-label">0% clear</p>
   </header>
 
-  <section class="ticket" aria-label="Score">
-    <button type="button" id="name" class="name" aria-label="Your name. Activate to change it.">…</button>
-    <p class="score" id="score">0</p>
-    <p class="score-label">your score</p>
-    <p class="personal" id="personal">0 dug · blew 0 rounds</p>
-    <div class="cool" id="cool" hidden>
-      <span id="cool-fill"></span>
-      <em id="cool-label">in the crater</em>
-    </div>
-    <p class="everyone" id="everyone"><strong>0</strong> dug this round</p>
-  </section>
-
   <section class="notes" id="notes" aria-label="Leaderboard">
     <div class="notes-head">
       <h2>Leaderboard</h2>
@@ -99,21 +87,33 @@
 
   <canvas id="mini" width="104" height="104" aria-label="Where you are on the board"></canvas>
 
-  <div class="dock">
-    <p id="coords" class="coords">0, 0</p>
-    <div class="tools">
-      <button type="button" id="flag-mode" aria-pressed="false">Flag</button>
-      <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
-      <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
-      <button type="button" id="origin">Board</button>
-      <button type="button" id="share">Share</button>
-      <button type="button" id="sound" aria-pressed="false">Sound</button>
-      <button type="button" id="chat-toggle" aria-controls="chat" aria-expanded="false">Chat</button>
-      <button type="button" id="notes-toggle" aria-controls="notes" aria-expanded="false">Leaderboard</button>
+  <div class="hud-bottom">
+    <p class="hint" id="hint">Tap to dig. Hold to flag. Drag to pan. One mine ends the round for everyone.</p>
+    <section class="ticket" aria-label="Score">
+      <button type="button" id="name" class="name" aria-label="Your name. Activate to change it.">…</button>
+      <p class="score" id="score">0</p>
+      <p class="score-label">your score</p>
+      <p class="personal" id="personal">0 dug · blew 0 rounds</p>
+      <div class="cool" id="cool" hidden>
+        <span id="cool-fill"></span>
+        <em id="cool-label">in the crater</em>
+      </div>
+      <p class="everyone" id="everyone"><strong>0</strong> dug this round</p>
+    </section>
+    <div class="dock">
+      <p id="coords" class="coords">0, 0</p>
+      <div class="tools">
+        <button type="button" id="flag-mode" aria-pressed="false">Flag</button>
+        <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+        <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+        <button type="button" id="origin">Board</button>
+        <button type="button" id="share">Share</button>
+        <button type="button" id="sound" aria-pressed="false">Sound</button>
+        <button type="button" id="chat-toggle" aria-controls="chat" aria-expanded="false">Chat</button>
+        <button type="button" id="notes-toggle" aria-controls="notes" aria-expanded="false" aria-label="Leaderboard"><span class="label-long">Leaderboard</span><span class="label-short">Lead</span></button>
+      </div>
     </div>
   </div>
-
-  <p class="hint" id="hint">Tap to dig. Hold to flag. Drag to pan. One mine ends the round for everyone.</p>
   <p class="toast" id="toast" role="status"></p>
   <div id="live" class="sr" aria-live="assertive"></div>
   <script src="/client.js" type="module"></script>

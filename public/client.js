@@ -57,6 +57,7 @@ let hinted = false;
 const pointers = new Map();
 let pinch = null;
 let press = null;
+const HOLD_MS = 450;
 
 function playerId() {
   let id = localStorage.getItem("minesswept.id");
@@ -67,24 +68,68 @@ function playerId() {
   return id;
 }
 
+function readViewport() {
+  const vv = window.visualViewport;
+  return {
+    w: Math.max(1, Math.round((vv && vv.width) || window.innerWidth)),
+    h: Math.max(1, Math.round((vv && vv.height) || window.innerHeight)),
+    dpr: Math.min(2, window.devicePixelRatio || 1),
+  };
+}
+
 function resize() {
+  const box = readViewport();
+  const coarse = matchMedia("(pointer: coarse)").matches || box.w < 800;
+  // The mobile URL bar animates the visual height over many resize events.
+  // Rebuilding the bitmap on each one clears it and flickers. Wait until the
+  // bar settles, then fit once. A big change (rotation) still applies now.
+  const minor = resize.did
+    && coarse
+    && box.dpr === dpr
+    && Math.abs(box.w - cssW) <= 2
+    && Math.abs(box.h - cssH) > 2
+    && Math.abs(box.h - cssH) < 140;
+  clearTimeout(resize.timer);
+  if (minor) {
+    resize.timer = setTimeout(() => applyResize(readViewport()), 200);
+    return;
+  }
+  applyResize(box);
+}
+
+function applyResize(box) {
+  const { w, h, dpr: nextDpr } = box;
+  if (resize.did && w === cssW && h === cssH && nextDpr === dpr) return;
+  const first = !resize.did;
   frameDirty = true;
-  dpr = Math.min(2, devicePixelRatio || 1);
-  cssW = innerWidth;
-  cssH = innerHeight;
-  canvas.width = Math.floor(cssW * dpr);
-  canvas.height = Math.floor(cssH * dpr);
+  cssW = w;
+  cssH = h;
+  dpr = nextDpr;
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  const bw = Math.max(1, Math.floor(cssW * dpr));
+  const bh = Math.max(1, Math.floor(cssH * dpr));
+  if (canvas.width !== bw || canvas.height !== bh) {
+    canvas.width = bw;
+    canvas.height = bh;
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const mini = $("mini");
   if (mini) {
     const css = cssW <= 800 ? 76 : 104;
     const scale = Math.min(2, dpr);
-    mini.width = Math.floor(css * scale);
-    mini.height = Math.floor(css * scale);
+    const mw = Math.floor(css * scale);
+    const mh = Math.floor(css * scale);
+    if (mini.width !== mw || mini.height !== mh) {
+      mini.width = mw;
+      mini.height = mh;
+    }
+    mini.style.width = css + "px";
+    mini.style.height = css + "px";
   }
-  const across = cssW < 700 ? 11 : 18;
-  if (!resize.did) {
-    cam.z = clamp(Math.floor(cssW / across), minZoom(), 48);
+  if (first) {
+    const across = cssW < 700 ? 10 : 18;
+    cam.z = clamp(Math.round(cssW / across), Math.max(fitZoom(), 12), 48);
     goal.z = cam.z;
     goal.x = cam.x;
     goal.y = cam.y;
@@ -98,6 +143,7 @@ function clamp(n, a, b) {
 }
 
 function contentFrame() {
+  if (cssW <= 800) return { top: 130, bottom: 250, left: 16, right: 16 };
   return { top: 96, bottom: 80, left: 20, right: 20 };
 }
 
@@ -106,10 +152,6 @@ function fitZoom() {
   const availW = Math.max(80, cssW - frame.left - frame.right);
   const availH = Math.max(80, cssH - frame.top - frame.bottom);
   return Math.max(0.05, Math.min(availW / boardSize, availH / boardSize));
-}
-
-function minZoom() {
-  return fitZoom();
 }
 
 function usesOverview() {
@@ -126,7 +168,7 @@ function useSize(n) {
   boardSize = size;
   cam.x = goal.x = size / 2;
   cam.y = goal.y = size / 2;
-  const z = clamp(32, minZoom(), 48);
+  const z = clamp(32, fitZoom(), 48);
   cam.z = goal.z = z;
   mapN = 0;
   lastView = "";
@@ -612,7 +654,7 @@ function showOver(msg) {
   $("over-tops").replaceChildren();
   if (msg.cells) applyCells(msg.cells, true);
   if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
-    const z = clamp(Math.max(cam.z, 32), minZoom(), 48);
+    const z = clamp(Math.max(cam.z, 32), fitZoom(), 48);
     cam.x = goal.x = msg.x + 0.5;
     cam.y = goal.y = msg.y + 0.5;
     cam.z = goal.z = z;
@@ -961,20 +1003,62 @@ function easeCam() {
   return true;
 }
 
+function boardScreenSpan() {
+  const [x, y] = worldToScreen(0, 0);
+  return { x, y, size: boardSize * cam.z };
+}
+
+// Keep draws inside the viewport. A 1,000-cell board at playable zoom is tens
+// of thousands of pixels across. iOS Core Graphics and mobile GPUs drop or
+// corrupt a path once a coordinate passes about ±32767, which blanks the field.
+function intersectViewport(x, y, w, h) {
+  const x0 = Math.max(0, x);
+  const y0 = Math.max(0, y);
+  const x1 = Math.min(cssW, x + w);
+  const y1 = Math.min(cssH, y + h);
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 function drawBoardEdge() {
-  const [sx, sy] = worldToScreen(0, 0);
-  const span = boardSize * cam.z;
+  const { x, y, size } = boardScreenSpan();
+  const x1 = x + size;
+  const y1 = y + size;
   ctx.strokeStyle = "rgba(228, 177, 90, 0.4)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(sx + 0.5, sy + 0.5, Math.max(1, span - 1), Math.max(1, span - 1));
+  ctx.beginPath();
+  const onX = (v) => v > -2 && v < cssW + 2;
+  const onY = (v) => v > -2 && v < cssH + 2;
+  if (onX(x)) {
+    ctx.moveTo(x + 0.5, Math.max(y, 0));
+    ctx.lineTo(x + 0.5, Math.min(y1, cssH));
+  }
+  if (onX(x1)) {
+    ctx.moveTo(x1 - 0.5, Math.max(y, 0));
+    ctx.lineTo(x1 - 0.5, Math.min(y1, cssH));
+  }
+  if (onY(y)) {
+    ctx.moveTo(Math.max(x, 0), y + 0.5);
+    ctx.lineTo(Math.min(x1, cssW), y + 0.5);
+  }
+  if (onY(y1)) {
+    ctx.moveTo(Math.max(x, 0), y1 - 0.5);
+    ctx.lineTo(Math.min(x1, cssW), y1 - 0.5);
+  }
+  ctx.stroke();
 }
 
 function drawOverview() {
   paintMapImage();
-  const [sx, sy] = worldToScreen(0, 0);
-  const span = boardSize * cam.z;
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(mapCanvas, sx, sy, span, span);
+  const { x, y, size } = boardScreenSpan();
+  const dest = intersectViewport(x, y, size, size);
+  if (dest.w > 0.5 && dest.h > 0.5 && size > 0) {
+    const sx = ((dest.x - x) / size) * mapCanvas.width;
+    const sy = ((dest.y - y) / size) * mapCanvas.height;
+    const sw = (dest.w / size) * mapCanvas.width;
+    const sh = (dest.h / size) * mapCanvas.height;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(mapCanvas, sx, sy, sw, sh, dest.x, dest.y, dest.w, dest.h);
+  }
   drawBoardEdge();
   const now = performance.now();
   for (const [id, pin] of pins) {
@@ -983,6 +1067,7 @@ function drawOverview() {
       continue;
     }
     const [px, py] = worldToScreen(pin.x + 0.5, pin.y + 0.5);
+    if (px < -20 || py < -20 || px > cssW + 20 || py > cssH + 20) continue;
     ctx.fillStyle = "#140e0a";
     ctx.beginPath();
     ctx.arc(px, py, 5, 0, Math.PI * 2);
@@ -1033,20 +1118,51 @@ function drawMinimap() {
   }
 }
 
-function draw() {
-  const moved = easeCam();
-  const now = performance.now();
-  for (const [id, pin] of pins) if (now - pin.at > 12000) pins.delete(id);
-  for (const [id, cursor] of cursors) if (now - cursor.at > 6000) cursors.delete(id);
-  const fx = particles.length || flashes.size || cursors.size || pins.size || (press && press.hold && !press.moved);
-  if (moved || fx || frameDirty || mapDirty) paintFrame(now);
-  const sec = (Date.now() / 1000) | 0;
-  if (sec !== draw.sec) {
-    draw.sec = sec;
-    paintRound();
+function knownOpen(x, y) {
+  const cell = cells.get(x + "," + y);
+  return !!cell && cell.k !== "f";
+}
+
+function finishHold(now) {
+  if (!press || press.placed || press.moved || !press.hold) return;
+  if (knownOpen(press.cell[0], press.cell[1])) {
+    press.hold = false;
+    frameDirty = true;
+    return;
   }
-  if (me.cooldownUntil > Date.now() || !$("cool").hidden) paintCool(now);
+  if (now - press.t < HOLD_MS) return;
+  if (usesOverview() || !inBoard(press.cell[0], press.cell[1])) return;
+  press.placed = true;
+  flag(press.cell[0], press.cell[1]);
+  try {
+    if (typeof navigator.vibrate === "function") navigator.vibrate(15);
+  } catch {
+    /* vibration is optional */
+  }
+}
+
+function draw() {
   requestAnimationFrame(draw);
+  try {
+    const moved = easeCam();
+    const now = performance.now();
+    finishHold(now);
+    for (const [id, pin] of pins) if (now - pin.at > 12000) pins.delete(id);
+    for (const [id, cursor] of cursors) if (now - cursor.at > 6000) cursors.delete(id);
+    const fx = particles.length || flashes.size || cursors.size || pins.size || (press && press.hold && !press.moved);
+    if (moved || fx || frameDirty || mapDirty) paintFrame(now);
+    const sec = (Date.now() / 1000) | 0;
+    if (sec !== draw.sec) {
+      draw.sec = sec;
+      paintRound();
+    }
+    if (me.cooldownUntil > Date.now() || !$("cool").hidden) paintCool(now);
+    draw.fails = 0;
+  } catch (err) {
+    draw.fails = (draw.fails || 0) + 1;
+    if (draw.fails === 1 || draw.fails % 60 === 0) console.error(err);
+    if (draw.fails % 15 === 0) frameDirty = true;
+  }
 }
 
 function paintFrame(now) {
@@ -1059,11 +1175,11 @@ function paintFrame(now) {
   if (far) {
     drawOverview();
   } else {
-    const [bx, by] = worldToScreen(0, 0);
-    const span = boardSize * cam.z;
+    const spanBox = boardScreenSpan();
+    const board = intersectViewport(spanBox.x, spanBox.y, spanBox.size, spanBox.size);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(bx, by, span, span);
+    ctx.rect(board.x, board.y, Math.max(0, board.w), Math.max(0, board.h));
     ctx.clip();
     const v = viewRect();
     const gutter = cam.z > 22 ? 1.5 : 0;
@@ -1093,12 +1209,18 @@ function paintFrame(now) {
 
     if (press && press.hold && !press.moved && inBoard(press.cell[0], press.cell[1])) {
       const [sx, sy] = worldToScreen(press.cell[0], press.cell[1]);
-      const t = clamp((now - press.t) / 450, 0, 1);
-      ctx.strokeStyle = `rgba(228, 177, 90, ${0.3 + t * 0.7})`;
-      ctx.lineWidth = 2;
+      const size = cam.z - gutter;
+      const t = clamp((now - press.t) / HOLD_MS, 0, 1);
+      const radius = (Math.hypot(size, size) / 2) * t;
+      ctx.save();
       ctx.beginPath();
-      ctx.arc(sx + cam.z / 2, sy + cam.z / 2, (cam.z / 2) * t, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.rect(sx, sy, size, size);
+      ctx.clip();
+      ctx.fillStyle = `rgba(228, 177, 90, ${0.28 + t * 0.5})`;
+      ctx.beginPath();
+      ctx.arc(sx + size / 2, sy + size / 2, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
 
     for (const [id, c] of cursors) {
@@ -1273,7 +1395,7 @@ let digTimer = 0;
 let lastTap = { t: 0, x: 0, y: 0 };
 
 function zoomInto(px, py) {
-  zoomAt(px, py, clamp(Math.max(cam.z * 2.4, 22), minZoom(), 78), false);
+  zoomAt(px, py, clamp(Math.max(cam.z * 2.4, 22), fitZoom(), 78), false);
 }
 
 canvas.addEventListener("pointerdown", (e) => {
@@ -1302,7 +1424,8 @@ canvas.addEventListener("pointerdown", (e) => {
     return;
   }
   if (e.button !== 0) return;
-  press = { x: px, y: py, cell: cellAt(px, py), t: performance.now(), moved: false, hold: true, id: e.pointerId };
+  const cell = cellAt(px, py);
+  press = { x: px, y: py, cell, t: performance.now(), moved: false, hold: !knownOpen(cell[0], cell[1]), id: e.pointerId };
 });
 
 canvas.addEventListener("pointermove", (e) => {
@@ -1317,7 +1440,7 @@ canvas.addEventListener("pointermove", (e) => {
     const pts = [...pointers.values()];
     const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
     if (pinch.d > 0) {
-      const next = clamp(pinch.z * (d / pinch.d), minZoom(), 78);
+      const next = clamp(pinch.z * (d / pinch.d), fitZoom(), 78);
       zoomAt((pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2, next, true);
     }
     return;
@@ -1350,24 +1473,25 @@ canvas.addEventListener("pointerup", (e) => {
   if (pointers.size < 2) pinch = null;
   if (!press || press.id !== e.pointerId) return;
   if (press.middle || e.button === 1) {
-    if (e.button === 1) press = null;
+    if (e.button === 1) {
+      press = null;
+      frameDirty = true;
+    }
     return;
   }
   if (e.button !== 0) return;
-  const held = performance.now() - press.t;
+  finishHold(performance.now());
+  const placed = press.placed;
   const cell = press.cell;
   const moved = press.moved;
   const px = press.x;
   const py = press.y;
   press = null;
-  if (moved || pointers.size > 0) return;
+  frameDirty = true;
+  if (placed || moved || pointers.size > 0) return;
   if (!inBoard(cell[0], cell[1])) return;
   if (usesOverview()) {
     zoomInto(px, py);
-    return;
-  }
-  if (held >= 450) {
-    flag(cell[0], cell[1]);
     return;
   }
   if (flagMode) {
@@ -1377,7 +1501,7 @@ canvas.addEventListener("pointerup", (e) => {
   const nowTap = performance.now();
   if (nowTap - lastTap.t < 320 && Math.hypot(px - lastTap.x, py - lastTap.y) < 28) {
     lastTap.t = 0;
-    zoomAt(px, py, clamp(cam.z * 2, minZoom(), 78), false);
+    zoomAt(px, py, clamp(cam.z * 2, fitZoom(), 78), false);
     return;
   }
   lastTap = { t: nowTap, x: px, y: py };
@@ -1386,7 +1510,10 @@ canvas.addEventListener("pointerup", (e) => {
 
 canvas.addEventListener("pointercancel", (e) => {
   pointers.delete(e.pointerId);
-  if (press?.id === e.pointerId) press = null;
+  if (press?.id === e.pointerId) {
+    press = null;
+    frameDirty = true;
+  }
 });
 
 canvas.addEventListener("wheel", (e) => {
@@ -1394,11 +1521,11 @@ canvas.addEventListener("wheel", (e) => {
   const [px, py] = localPoint(e);
   const factor = Math.exp(-e.deltaY * 0.0015);
   const base = easeCam.live ? goal.z : cam.z;
-  zoomAt(px, py, clamp(base * factor, minZoom(), 78), false);
+  zoomAt(px, py, clamp(base * factor, fitZoom(), 78), false);
 }, { passive: false });
 
 function zoomAt(px, py, next, immediate) {
-  const z = clamp(next, minZoom(), 78);
+  const z = clamp(next, fitZoom(), 78);
   const base = immediate || !easeCam.live ? cam : goal;
   const wx = base.x + (px - cssW / 2) / base.z;
   const wy = base.y + (py - cssH / 2) / base.z;
@@ -1440,8 +1567,8 @@ addEventListener("keydown", (e) => {
     if (flagMode) flag(x, y);
     else dig(x, y);
   }
-  else if (e.key === "+" || e.key === "=") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) * 1.18, minZoom(), 78), false);
-  else if (e.key === "-" || e.key === "_") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) / 1.18, minZoom(), 78), false);
+  else if (e.key === "+" || e.key === "=") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) * 1.18, fitZoom(), 78), false);
+  else if (e.key === "-" || e.key === "_") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) / 1.18, fitZoom(), 78), false);
   else if (e.key === "Escape") {
     setLeaderboard(false);
     e.preventDefault();
@@ -1470,11 +1597,11 @@ function toggleFlagMode() {
 $("flag-mode").addEventListener("click", toggleFlagMode);
 $("zoom-in").addEventListener("click", () => {
   const z = easeCam.live ? goal.z : cam.z;
-  zoomAt(cssW / 2, cssH / 2, clamp(z * 1.45, minZoom(), 78), false);
+  zoomAt(cssW / 2, cssH / 2, clamp(z * 1.45, fitZoom(), 78), false);
 });
 $("zoom-out").addEventListener("click", () => {
   const z = easeCam.live ? goal.z : cam.z;
-  zoomAt(cssW / 2, cssH / 2, clamp(z / 1.45, minZoom(), 78), false);
+  zoomAt(cssW / 2, cssH / 2, clamp(z / 1.45, fitZoom(), 78), false);
 });
 $("origin").addEventListener("click", () => fitBoard());
 $("mini").addEventListener("pointerdown", (e) => {
@@ -1485,7 +1612,7 @@ $("mini").addEventListener("pointerdown", (e) => {
   const v = clamp((e.clientY - r.top) / r.height, 0, 1);
   goal.x = u * boardSize;
   goal.y = v * boardSize;
-  if (usesOverview()) goal.z = clamp(28, minZoom(), 48);
+  if (usesOverview()) goal.z = clamp(28, fitZoom(), 48);
   clampCamera(goal);
 });
 function setChat(open) {
@@ -1623,6 +1750,21 @@ $("intro").addEventListener("keydown", (e) => {
 });
 
 addEventListener("resize", resize);
+if (window.visualViewport) {
+  visualViewport.addEventListener("resize", resize);
+  visualViewport.addEventListener("scroll", () => {
+    const typing = document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (typing) return;
+    if (Math.abs(visualViewport.offsetTop) > 1 || Math.abs(visualViewport.offsetLeft) > 1) {
+      scrollTo(0, 0);
+    }
+  });
+}
+addEventListener("touchmove", (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest("input, textarea, .notes, .chat, .tools, .intro-card, .over")) return;
+  if (e.cancelable) e.preventDefault();
+}, { passive: false });
 resize();
 connect();
 requestAnimationFrame(draw);
