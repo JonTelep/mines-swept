@@ -193,7 +193,7 @@ export async function renderShareCard(stats) {
   drawText(rgba, width, online, 118 + measureText(bombs, 4) + 40, 448, 4, moss);
   const players = stats.visitors > 0 ? `${formatCount(stats.visitors)} PLAYERS` : "";
   if (players) drawText(rgba, width, players, 118, 490, 3, paper);
-  drawText(rgba, width, "MINES.TELEP.IO", 760, players ? 490 : 448, 4, crater);
+  drawText(rgba, width, "MINESSWEPT.COM", 760, players ? 490 : 448, 4, crater);
 
   return encodePNG(width, height, rgba);
 }

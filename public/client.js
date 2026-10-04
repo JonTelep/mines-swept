@@ -67,24 +67,68 @@ function playerId() {
   return id;
 }
 
+function readViewport() {
+  const vv = window.visualViewport;
+  return {
+    w: Math.max(1, Math.round((vv && vv.width) || window.innerWidth)),
+    h: Math.max(1, Math.round((vv && vv.height) || window.innerHeight)),
+    dpr: Math.min(2, window.devicePixelRatio || 1),
+  };
+}
+
 function resize() {
+  const box = readViewport();
+  const coarse = matchMedia("(pointer: coarse)").matches || box.w < 800;
+  // The mobile URL bar animates the visual height over many resize events.
+  // Rebuilding the bitmap on each one clears it and flickers. Wait until the
+  // bar settles, then fit once. A big change (rotation) still applies now.
+  const minor = resize.did
+    && coarse
+    && box.dpr === dpr
+    && Math.abs(box.w - cssW) <= 2
+    && Math.abs(box.h - cssH) > 2
+    && Math.abs(box.h - cssH) < 140;
+  clearTimeout(resize.timer);
+  if (minor) {
+    resize.timer = setTimeout(() => applyResize(readViewport()), 200);
+    return;
+  }
+  applyResize(box);
+}
+
+function applyResize(box) {
+  const { w, h, dpr: nextDpr } = box;
+  if (resize.did && w === cssW && h === cssH && nextDpr === dpr) return;
+  const first = !resize.did;
   frameDirty = true;
-  dpr = Math.min(2, devicePixelRatio || 1);
-  cssW = innerWidth;
-  cssH = innerHeight;
-  canvas.width = Math.floor(cssW * dpr);
-  canvas.height = Math.floor(cssH * dpr);
+  cssW = w;
+  cssH = h;
+  dpr = nextDpr;
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  const bw = Math.max(1, Math.floor(cssW * dpr));
+  const bh = Math.max(1, Math.floor(cssH * dpr));
+  if (canvas.width !== bw || canvas.height !== bh) {
+    canvas.width = bw;
+    canvas.height = bh;
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const mini = $("mini");
   if (mini) {
     const css = cssW <= 800 ? 76 : 104;
     const scale = Math.min(2, dpr);
-    mini.width = Math.floor(css * scale);
-    mini.height = Math.floor(css * scale);
+    const mw = Math.floor(css * scale);
+    const mh = Math.floor(css * scale);
+    if (mini.width !== mw || mini.height !== mh) {
+      mini.width = mw;
+      mini.height = mh;
+    }
+    mini.style.width = css + "px";
+    mini.style.height = css + "px";
   }
-  const across = cssW < 700 ? 11 : 18;
-  if (!resize.did) {
-    cam.z = clamp(Math.floor(cssW / across), minZoom(), 48);
+  if (first) {
+    const across = cssW < 700 ? 10 : 18;
+    cam.z = clamp(Math.round(cssW / across), Math.max(minZoom(), 12), 48);
     goal.z = cam.z;
     goal.x = cam.x;
     goal.y = cam.y;
@@ -98,6 +142,7 @@ function clamp(n, a, b) {
 }
 
 function contentFrame() {
+  if (cssW <= 800) return { top: 130, bottom: 250, left: 16, right: 16 };
   return { top: 96, bottom: 80, left: 20, right: 20 };
 }
 
@@ -961,20 +1006,62 @@ function easeCam() {
   return true;
 }
 
+function boardScreenSpan() {
+  const [x, y] = worldToScreen(0, 0);
+  return { x, y, size: boardSize * cam.z };
+}
+
+// Keep draws inside the viewport. A 1,000-cell board at playable zoom is tens
+// of thousands of pixels across. iOS Core Graphics and mobile GPUs drop or
+// corrupt a path once a coordinate passes about ±32767, which blanks the field.
+function intersectViewport(x, y, w, h) {
+  const x0 = Math.max(0, x);
+  const y0 = Math.max(0, y);
+  const x1 = Math.min(cssW, x + w);
+  const y1 = Math.min(cssH, y + h);
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 function drawBoardEdge() {
-  const [sx, sy] = worldToScreen(0, 0);
-  const span = boardSize * cam.z;
+  const { x, y, size } = boardScreenSpan();
+  const x1 = x + size;
+  const y1 = y + size;
   ctx.strokeStyle = "rgba(228, 177, 90, 0.4)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(sx + 0.5, sy + 0.5, Math.max(1, span - 1), Math.max(1, span - 1));
+  ctx.beginPath();
+  const onX = (v) => v > -2 && v < cssW + 2;
+  const onY = (v) => v > -2 && v < cssH + 2;
+  if (onX(x)) {
+    ctx.moveTo(x + 0.5, Math.max(y, 0));
+    ctx.lineTo(x + 0.5, Math.min(y1, cssH));
+  }
+  if (onX(x1)) {
+    ctx.moveTo(x1 - 0.5, Math.max(y, 0));
+    ctx.lineTo(x1 - 0.5, Math.min(y1, cssH));
+  }
+  if (onY(y)) {
+    ctx.moveTo(Math.max(x, 0), y + 0.5);
+    ctx.lineTo(Math.min(x1, cssW), y + 0.5);
+  }
+  if (onY(y1)) {
+    ctx.moveTo(Math.max(x, 0), y1 - 0.5);
+    ctx.lineTo(Math.min(x1, cssW), y1 - 0.5);
+  }
+  ctx.stroke();
 }
 
 function drawOverview() {
   paintMapImage();
-  const [sx, sy] = worldToScreen(0, 0);
-  const span = boardSize * cam.z;
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(mapCanvas, sx, sy, span, span);
+  const { x, y, size } = boardScreenSpan();
+  const dest = intersectViewport(x, y, size, size);
+  if (dest.w > 0.5 && dest.h > 0.5 && size > 0) {
+    const sx = ((dest.x - x) / size) * mapCanvas.width;
+    const sy = ((dest.y - y) / size) * mapCanvas.height;
+    const sw = (dest.w / size) * mapCanvas.width;
+    const sh = (dest.h / size) * mapCanvas.height;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(mapCanvas, sx, sy, sw, sh, dest.x, dest.y, dest.w, dest.h);
+  }
   drawBoardEdge();
   const now = performance.now();
   for (const [id, pin] of pins) {
@@ -983,6 +1070,7 @@ function drawOverview() {
       continue;
     }
     const [px, py] = worldToScreen(pin.x + 0.5, pin.y + 0.5);
+    if (px < -20 || py < -20 || px > cssW + 20 || py > cssH + 20) continue;
     ctx.fillStyle = "#140e0a";
     ctx.beginPath();
     ctx.arc(px, py, 5, 0, Math.PI * 2);
@@ -1034,19 +1122,27 @@ function drawMinimap() {
 }
 
 function draw() {
-  const moved = easeCam();
-  const now = performance.now();
-  for (const [id, pin] of pins) if (now - pin.at > 12000) pins.delete(id);
-  for (const [id, cursor] of cursors) if (now - cursor.at > 6000) cursors.delete(id);
-  const fx = particles.length || flashes.size || cursors.size || pins.size || (press && press.hold && !press.moved);
-  if (moved || fx || frameDirty || mapDirty) paintFrame(now);
-  const sec = (Date.now() / 1000) | 0;
-  if (sec !== draw.sec) {
-    draw.sec = sec;
-    paintRound();
-  }
-  if (me.cooldownUntil > Date.now() || !$("cool").hidden) paintCool(now);
   requestAnimationFrame(draw);
+  try {
+    const moved = easeCam();
+    const now = performance.now();
+    for (const [id, pin] of pins) if (now - pin.at > 12000) pins.delete(id);
+    for (const [id, cursor] of cursors) if (now - cursor.at > 6000) cursors.delete(id);
+    const fx = particles.length || flashes.size || cursors.size || pins.size || (press && press.hold && !press.moved);
+    if (moved || fx || frameDirty || mapDirty) paintFrame(now);
+    const sec = (Date.now() / 1000) | 0;
+    if (sec !== draw.sec) {
+      draw.sec = sec;
+      paintRound();
+    }
+    if (me.cooldownUntil > Date.now() || !$("cool").hidden) paintCool(now);
+  } catch (err) {
+    frameDirty = true;
+    if (!draw.warned) {
+      draw.warned = true;
+      console.error(err);
+    }
+  }
 }
 
 function paintFrame(now) {
@@ -1059,11 +1155,11 @@ function paintFrame(now) {
   if (far) {
     drawOverview();
   } else {
-    const [bx, by] = worldToScreen(0, 0);
-    const span = boardSize * cam.z;
+    const spanBox = boardScreenSpan();
+    const board = intersectViewport(spanBox.x, spanBox.y, spanBox.size, spanBox.size);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(bx, by, span, span);
+    ctx.rect(board.x, board.y, Math.max(0, board.w), Math.max(0, board.h));
     ctx.clip();
     const v = viewRect();
     const gutter = cam.z > 22 ? 1.5 : 0;
@@ -1623,6 +1719,21 @@ $("intro").addEventListener("keydown", (e) => {
 });
 
 addEventListener("resize", resize);
+if (window.visualViewport) {
+  visualViewport.addEventListener("resize", resize);
+  visualViewport.addEventListener("scroll", () => {
+    const typing = document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (typing) return;
+    if (Math.abs(visualViewport.offsetTop) > 1 || Math.abs(visualViewport.offsetLeft) > 1) {
+      scrollTo(0, 0);
+    }
+  });
+}
+addEventListener("touchmove", (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest("input, textarea, .notes, .chat, .tools")) return;
+  if (e.cancelable) e.preventDefault();
+}, { passive: false });
 resize();
 connect();
 requestAnimationFrame(draw);

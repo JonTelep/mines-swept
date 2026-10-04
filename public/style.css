@@ -12,6 +12,8 @@
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bot: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
   color-scheme: dark;
 }
 
@@ -19,11 +21,15 @@
 
 html, body {
   margin: 0;
+  width: 100%;
   height: 100%;
+  height: 100dvh;
   background: var(--ink);
   color: var(--paper);
   font-family: var(--serif);
   overflow: hidden;
+  position: fixed;
+  inset: 0;
   touch-action: none;
   overscroll-behavior: none;
   user-select: none;
@@ -56,6 +62,11 @@ body.flagging #field { cursor: cell; }
     repeating-linear-gradient(0deg, rgba(255, 236, 200, 0.015) 0 1px, transparent 1px 4px);
   z-index: 1;
 }
+
+.label-short { display: none; }
+
+/* Children stay position:fixed on desktop, so this box takes no space. */
+.hud-bottom { display: contents; }
 
 .top, .ticket, .notes, .chat, .dock, .hint, .toast, .over, #mini {
   position: fixed;
@@ -800,17 +811,42 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   outline-offset: 2px;
 }
 
+@media (max-width: 800px), (pointer: coarse) {
+  /* The 1px scanline sits on top of a moving grid and shimmers while panning.
+     backdrop-filter promotes an extra layer that flickers on phone GPUs. */
+  .veil,
+  body.far .veil {
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(10, 6, 3, 0.4) 100%);
+  }
+  .notes,
+  .chat {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
 @media (max-width: 800px) {
   .ticket {
-    top: auto;
-    bottom: calc(68px + var(--safe-bot));
-    left: 10px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 12px;
+    align-items: end;
     width: auto;
-    max-width: 46vw;
-    padding: 8px 10px;
+    max-width: none;
+    padding: 10px 12px;
   }
 
-  .score { font-size: 1.6rem; }
+  .ticket .name { grid-column: 1; }
+  .ticket .score {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    margin: 0;
+    align-self: center;
+    font-size: 1.7rem;
+  }
+  .ticket .personal { grid-column: 1; margin-top: 2px; }
+  .ticket .cool,
+  .ticket .everyone { grid-column: 1 / -1; }
   .score-label { display: none; }
 
   .notes,
@@ -821,7 +857,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     right: 0;
     left: 0;
     width: auto;
-    max-height: min(58vh, calc(100vh - 24px));
+    max-height: min(58dvh, calc(100dvh - 24px));
     border-left: 0;
     border-right: 0;
     border-bottom: 0;
@@ -839,6 +875,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     z-index: 4;
     pointer-events: auto;
     transform: translateY(0);
+    padding-bottom: calc(14px + var(--safe-bot));
   }
 
   .chat,
@@ -849,7 +886,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     bottom: 0;
     top: auto;
     width: auto;
-    max-height: min(58vh, calc(100vh - 24px));
+    max-height: min(58dvh, calc(100dvh - 24px));
     opacity: 1;
     visibility: visible;
   }
@@ -864,29 +901,116 @@ button:focus-visible, a:focus-visible, input:focus-visible {
     z-index: 4;
     pointer-events: auto;
     transform: translateY(0);
+    padding-bottom: calc(14px + var(--safe-bot));
   }
 
-  .tools {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    justify-content: flex-start;
-    max-width: 100%;
+  .hud-bottom {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    position: fixed;
+    z-index: 2;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding:
+      0
+      calc(10px + var(--safe-right))
+      calc(8px + var(--safe-bot))
+      calc(10px + var(--safe-left));
+    pointer-events: none;
   }
-  .hint { bottom: calc(128px + var(--safe-bot)); font-size: 0.92rem; }
+
+  .hud-bottom .hint,
+  .hud-bottom .ticket,
+  .hud-bottom .dock {
+    position: relative;
+    inset: auto;
+    left: auto;
+    right: auto;
+    top: auto;
+    bottom: auto;
+    transform: none;
+    width: auto;
+    max-width: none;
+    margin: 0;
+  }
+
+  .hud-bottom .ticket,
+  .hud-bottom .tools,
+  .hud-bottom .tools button {
+    pointer-events: auto;
+  }
+
+  .hint {
+    font-size: 0.88rem;
+    line-height: 1.35;
+    text-align: center;
+  }
+
+  .hint.gone { display: none; }
+
+  .dock {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .label-long { display: none; }
+  .label-short { display: inline; }
+
+  .tools {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    flex-wrap: unset;
+    overflow: visible;
+    justify-content: stretch;
+    width: 100%;
+    max-width: none;
+    gap: 6px;
+  }
+
+  .tools button {
+    width: 100%;
+    min-width: 0;
+    padding: 0 2px;
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
   .top {
-    left: 16px;
+    left: calc(12px + var(--safe-left));
+    right: calc(96px + var(--safe-right));
     transform: none;
     text-align: left;
-    max-width: calc(100% - 108px);
+    max-width: none;
   }
-  .progress-track { margin-left: 0; width: min(220px, 58vw); }
+  .survived,
+  .progress-label,
+  .live { line-height: 1.35; }
+  .progress-track { margin-left: 0; width: min(220px, 100%); }
   #mini {
-    top: calc(14px + var(--safe-top));
-    right: 10px;
+    top: calc(10px + var(--safe-top));
+    right: calc(10px + var(--safe-right));
     bottom: auto;
     width: 76px;
     height: 76px;
   }
+}
+
+@media (max-width: 640px) {
+  .tools { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 800px) and (max-height: 520px) {
+  .hud-bottom { gap: 4px; }
+  .ticket { padding: 6px 8px; }
+  .ticket .score { font-size: 1.25rem; }
+  .hint { font-size: 0.78rem; }
+  .tools { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .tools button { min-height: 40px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
