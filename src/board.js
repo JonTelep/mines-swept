@@ -26,6 +26,21 @@ import {
   roundWon,
   safeCells,
 } from "./overview.js";
+import {
+  FLUSH_MS,
+  StatsLedger,
+  addCounts,
+  assembleHistory,
+  claimVisitor,
+  countPlayers,
+  dayBucket,
+  ensureStatsSchema,
+  hourBucket,
+  pruneHourSeen,
+  resolveRange,
+  seedIfNeeded,
+  shouldFlushNow,
+} from "./stats.js";
 
 const MAX_SOCKETS = 500;
 const MAX_PER_IP = 8;
@@ -50,6 +65,8 @@ export class Board {
     this.mineBase = 0;
     this.mineDelta = 0;
     this.dirtyBins = new Map();
+    this.ledger = new StatsLedger();
+    this.prunedHour = 0;
     if (typeof ctx.setWebSocketAutoResponse === "function") {
       ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     }
@@ -122,6 +139,7 @@ export class Board {
     } catch {
       /* column already there */
     }
+    ensureStatsSchema(sql);
   }
 
   loadCore() {
@@ -174,6 +192,7 @@ export class Board {
       this.feed = [];
     }
     this.sql().exec(`DELETE FROM players WHERE id = ?`, "deploycheck-bot01");
+    this.seedStats();
     const storedSize = Number(this.metaGet("size")) || 0;
     if (storedSize !== this.boardSize) this.adoptFiniteBoard();
     this.mineBase = Number(this.metaGet("mines")) || 0;
@@ -186,8 +205,90 @@ export class Board {
     if (this.phase === "over" && this.nextAt && Date.now() >= this.nextAt) {
       this.beginRound();
     } else if (this.phase === "over" && this.nextAt) {
-      this.armAlarm(this.nextAt);
+      this.armSoon();
     }
+  }
+
+  statsSnapshot() {
+    const meta = {};
+    for (const row of this.sql().exec(`SELECT k, v FROM meta`).toArray()) meta[row.k] = row.v;
+    return {
+      meta,
+      rounds: this.sql().exec(`SELECT n, started, ended, cleared, online, kind FROM rounds`).toArray(),
+      players: this.sql().exec(`SELECT id, updated FROM players`).toArray(),
+      chats: this.sql().exec(`SELECT at, kind FROM chat`).toArray(),
+    };
+  }
+
+  seedStats() {
+    if (this.metaGet("stats_seeded") === "1") return;
+    const snapshot = this.statsSnapshot();
+    const now = Date.now();
+    txn(this.ctx, () => {
+      seedIfNeeded(this.sql(), snapshot, now);
+    });
+  }
+
+  writePieces(pieces) {
+    if (!pieces?.length) return;
+    txn(this.ctx, () => {
+      for (const piece of pieces) addCounts(this.sql(), piece.grain, piece.bucket, piece.counts);
+    });
+  }
+
+  bumpStats(partial) {
+    const now = Date.now();
+    this.writePieces(this.ledger.ensure(now));
+    if (!this.ledger.add(partial)) return;
+    // A new player is rare, and flushing here also checkpoints the digs
+    // they walked in on.
+    if ((partial.newPlayers | 0) > 0 || shouldFlushNow(this.ledger.pendingDay)) this.flushStats();
+    else this.scheduleStats();
+  }
+
+  claimPlayer(id) {
+    const now = Date.now();
+    this.writePieces(this.ledger.ensure(now));
+    claimVisitor(this.sql(), this.ledger, id, now);
+  }
+
+  flushStats() {
+    const now = Date.now();
+    const rolled = this.ledger.ensure(now);
+    this.ledger.add({ peakOnline: this.onlineCount() });
+    const pieces = rolled.concat(this.ledger.takeFlush());
+    if (!pieces.length) return;
+    txn(this.ctx, () => {
+      for (const piece of pieces) addCounts(this.sql(), piece.grain, piece.bucket, piece.counts);
+      const hour = hourBucket(now);
+      if (this.prunedHour !== hour) {
+        try {
+          pruneHourSeen(this.sql(), now, 50);
+        } catch {
+          /* prune is best-effort */
+        }
+        this.prunedHour = hour;
+      }
+    });
+  }
+
+  scheduleStats() {
+    if (this.ledger.armed) return;
+    this.ledger.armed = true;
+    this.armSoon();
+  }
+
+  armSoon() {
+    const times = [];
+    if (this.phase === "over" && this.nextAt > Date.now() + 20) times.push(this.nextAt);
+    if (this.ledger?.dirty) {
+      times.push(Date.now() + FLUSH_MS);
+      this.ledger.armed = true;
+    } else if (this.ledger) {
+      this.ledger.armed = false;
+    }
+    if (!times.length) return;
+    this.armAlarm(Math.min(...times));
   }
 
   adoptFiniteBoard() {
@@ -257,6 +358,7 @@ export class Board {
     const url = new URL(request.url);
     if (request.headers.get("Upgrade") === "websocket") return this.accept(request);
     if (url.pathname === "/og.png") return this.shareCard();
+    if (url.pathname === "/api/stats/history") return this.historyResponse(url);
     if (url.pathname === "/api/stats") return this.statsResponse();
     return new Response("not found", { status: 404 });
   }
@@ -278,6 +380,7 @@ export class Board {
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
     pair[1].serializeAttachment({ ip, hello: false });
+    this.bumpStats({ sessions: 1 });
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
@@ -311,10 +414,19 @@ export class Board {
 
   webSocketClose() {
     this.pushPresence();
+    // Close is often the last event before hibernation. Flush while the
+    // in-memory ledger is still this instance's.
+    this.flushStats();
+  }
+
+  webSocketError() {
+    this.flushStats();
   }
 
   alarm() {
+    this.flushStats();
     this.maybeAdvance();
+    this.armSoon();
   }
 
   onMessage(ws, msg) {
@@ -354,12 +466,14 @@ export class Board {
         color,
         now,
       );
+      this.bumpStats({ newPlayers: 1 });
     } else if (requested && requested !== existing.name) {
       this.sql().exec(`UPDATE players SET name = ?, updated = ? WHERE id = ?`, requested, now, msg.id);
     } else {
       this.sql().exec(`UPDATE players SET updated = ? WHERE id = ?`, now, msg.id);
     }
     const row = this.sql().exec(`SELECT * FROM players WHERE id = ?`, msg.id).toArray()[0];
+    this.claimPlayer(row.id);
     const runtime = this.runtimeFor(row);
     const view = sanitizeView(msg.v, this.boardSize) || { x0: 0, y0: 0, x1: 24, y1: 16 };
     const next = {
@@ -512,6 +626,11 @@ export class Board {
       return;
     }
     this.persistPlay(att, player, field, result, now);
+    this.bumpStats({
+      digs: 1,
+      cleared: result.cells?.length || 0,
+      booms: result.booms?.length || 0,
+    });
     this.emitPlay(ws, att, player, field, result);
     this.pushMapDelta();
     if (result.booms?.length) this.finishRound(att, field, result, now);
@@ -542,6 +661,7 @@ export class Board {
       field.flush(att.color);
       if (result.flag) this.metaAdd("flags", 1);
     });
+    if (result.flag) this.bumpStats({ flags: 1 });
     field.commitOverrides();
     const cells = result.flag
       ? [{ x: result.x, y: result.y, k: "f", n: 0, c: att.color }]
@@ -638,6 +758,7 @@ export class Board {
   }
 
   pushPresence() {
+    this.bumpStats({ peakOnline: this.onlineCount() });
     const packet = JSON.stringify({
       t: "presence",
       stats: this.publicStats(),
@@ -809,7 +930,9 @@ export class Board {
       this.metaSet("nextAt", String(this.nextAt));
       this.metaSet("over", JSON.stringify(this.over));
     });
-    this.armAlarm(this.nextAt);
+    this.bumpStats({ roundsEnded: 1 });
+    this.flushStats();
+    this.armSoon();
     const craters = minesAround((x, y) => field.isMine(x, y), boom.x, boom.y).map((cell) => ({
       x: cell.x,
       y: cell.y,
@@ -890,7 +1013,9 @@ export class Board {
       this.metaSet("nextAt", String(this.nextAt));
       this.metaSet("over", JSON.stringify(this.over));
     });
-    this.armAlarm(this.nextAt);
+    this.bumpStats({ roundsWon: 1 });
+    this.flushStats();
+    this.armSoon();
     this.broadcastAll({
       t: "win",
       ...this.over,
@@ -978,6 +1103,7 @@ export class Board {
       return;
     }
     this.postChat({ kind: "user", name: att.name, color: att.color, body: prepared.body });
+    this.bumpStats({ chats: 1 });
   }
 
   postChat(entry) {
@@ -1202,6 +1328,7 @@ export class Board {
   statsResponse() {
     const body = {
       ...this.publicStats(),
+      visitors: countPlayers(this.sql()),
       leaderboard: this.leaderboard(),
     };
     return Response.json(body, {
@@ -1212,8 +1339,90 @@ export class Board {
     });
   }
 
+  historyResponse(url) {
+    const now = Date.now();
+    this.writePieces(this.ledger.ensure(now));
+    const born = Number(this.metaGet("born")) || now;
+    const spec = resolveRange(url.searchParams.get("range"), now, born);
+    const rows = this.sql().exec(
+      `SELECT grain, bucket, visitors, new_players, sessions, digs, cleared, flags, booms, chats,
+              rounds_ended, rounds_won, peak_online
+       FROM stat_buckets WHERE grain = ? AND bucket >= ? AND bucket <= ?`,
+      spec.grain,
+      spec.from,
+      spec.to,
+    ).toArray();
+    const todayRow = this.sql().exec(
+      `SELECT grain, bucket, visitors, new_players, sessions, digs, cleared, flags, booms, chats,
+              rounds_ended, rounds_won, peak_online
+       FROM stat_buckets WHERE grain = 'd' AND bucket = ?`,
+      dayBucket(now),
+    ).toArray()[0];
+    const sums = this.sql().exec(
+      `SELECT
+         COALESCE(SUM(sessions), 0) AS sessions,
+         COALESCE(SUM(digs), 0) AS digs,
+         COALESCE(SUM(chats), 0) AS chats,
+         COALESCE(MAX(peak_online), 0) AS peak_online
+       FROM stat_buckets WHERE grain = 'd'`,
+    ).toArray()[0];
+    const roundCounts = this.sql().exec(
+      `SELECT
+         COALESCE(SUM(CASE WHEN kind = 'win' THEN 1 ELSE 0 END), 0) AS wins,
+         COALESCE(SUM(CASE WHEN kind IS NULL OR kind != 'win' THEN 1 ELSE 0 END), 0) AS ended
+       FROM rounds`,
+    ).toArray()[0];
+    const pending = this.ledger.view();
+    const players = countPlayers(this.sql());
+    const allTime = {
+      visitors: players,
+      newPlayers: players,
+      sessions: stamp(sums?.sessions) + (pending.dayCounts.sessions | 0),
+      digs: stamp(sums?.digs) + (pending.dayCounts.digs | 0),
+      cleared: Number(this.metaGet("cleared")) || 0,
+      flags: Number(this.metaGet("flags")) || 0,
+      booms: Number(this.metaGet("booms")) || 0,
+      chats: stamp(sums?.chats) + (pending.dayCounts.chats | 0),
+      roundsEnded: stamp(roundCounts?.ended),
+      roundsWon: stamp(roundCounts?.wins),
+      peakOnline: Math.max(
+        stamp(sums?.peak_online),
+        pending.dayCounts.peakOnline | 0,
+        pending.hourCounts.peakOnline | 0,
+      ),
+    };
+    const body = assembleHistory({
+      range: url.searchParams.get("range"),
+      now,
+      born,
+      rows,
+      pending,
+      todayRow,
+      allTime,
+      shame: this.history(8),
+      fame: this.fame(8),
+      leaderboard: this.leaderboard().map((row) => ({
+        name: row.name,
+        color: row.color,
+        score: row.score,
+        clears: row.clears,
+        booms: row.booms,
+      })),
+      best: { ms: this.bestMs, round: this.bestRound, name: this.bestName },
+      live: this.publicStats(),
+    });
+    return Response.json(body, {
+      headers: {
+        "cache-control": "public, max-age=5",
+        "access-control-allow-origin": "*",
+      },
+    });
+  }
+
   async shareCard() {
-    const png = await renderShareCard(this.publicStats());
+    const stats = this.publicStats();
+    stats.visitors = countPlayers(this.sql());
+    const png = await renderShareCard(stats);
     return new Response(png, {
       headers: {
         "content-type": "image/png",
