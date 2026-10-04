@@ -30,6 +30,9 @@ let boardSize = 1000;
 const BIN = 8;
 const mapCanvas = document.createElement("canvas");
 const mapCtx = mapCanvas.getContext("2d", { willReadFrequently: true });
+const overviewCanvas = document.createElement("canvas");
+const overviewCtx = overviewCanvas.getContext("2d");
+let overviewImage = null;
 let mapN = 0;
 let mapRev = new Uint8Array(0);
 let mapFlag = new Uint8Array(0);
@@ -1047,18 +1050,136 @@ function drawBoardEdge() {
   ctx.stroke();
 }
 
+function terrainRGB(x, y, open) {
+  const g = grit(x, y);
+  if (open) return [228 - (g % 10), 208 - (g % 8), 168 - (g % 6)];
+  return [54 + (g % 8), 46 + (g % 5), 34 + (g % 6)];
+}
+
+function binRGB(x, y) {
+  if (!mapN) return null;
+  const bx = (x / BIN) | 0;
+  const by = (y / BIN) | 0;
+  if (bx < 0 || by < 0 || bx >= mapN || by >= mapN) return null;
+  const i = by * mapN + bx;
+  const blast = mapBlast[i];
+  const rev = mapRev[i];
+  const flag = mapFlag[i];
+  if (!blast && !rev && !flag) return null;
+  if (blast) return [212, 72, 48];
+  const t = Math.min(1, rev / 28);
+  let r = 46 + t * (214 - 46);
+  let g = 38 + t * (190 - 38);
+  let b = 28 + t * (142 - 28);
+  if (flag) {
+    const f = Math.min(1, flag / 6);
+    r = r * (1 - f) + 228 * f;
+    g = g * (1 - f) + 177 * f;
+    b = b * (1 - f) + 90 * f;
+  }
+  return [r, g, b];
+}
+
+// Rasterize the visible board once. Individual cell rects disappear into a flat
+// field at this zoom, and blitting the software-backed minimap canvas comes out
+// blank on phone GPUs. The grid is one pixel on each boundary that fits.
+function drawOverviewBitmap() {
+  const span = boardScreenSpan();
+  const dest = intersectViewport(span.x, span.y, span.size, span.size);
+  if (!(dest.w > 0.5 && dest.h > 0.5) || !(span.size > 0)) return;
+  const left = Math.max(0, Math.floor(dest.x));
+  const top = Math.max(0, Math.floor(dest.y));
+  const right = Math.min(cssW, Math.ceil(dest.x + dest.w));
+  const bottom = Math.min(cssH, Math.ceil(dest.y + dest.h));
+  const cw = right - left;
+  const ch = bottom - top;
+  if (cw < 1 || ch < 1) return;
+  let step = 1;
+  while ((cw / step) * (ch / step) > 450000) step *= 2;
+  const sw = Math.ceil(cw / step);
+  const sh = Math.ceil(ch / step);
+  if (overviewCanvas.width !== sw || overviewCanvas.height !== sh) {
+    overviewCanvas.width = sw;
+    overviewCanvas.height = sh;
+    overviewImage = null;
+  }
+  if (!overviewImage) overviewImage = overviewCtx.createImageData(sw, sh);
+  const data = overviewImage.data;
+  const z = Math.max(cam.z, 0.05);
+  let grid = 1;
+  while (grid * z < 4 && grid < 256) grid *= 2;
+  const half = (step * 0.5) / z;
+  let p = 0;
+  for (let j = 0; j < sh; j++) {
+    const sy = top + (j + 0.5) * step;
+    const wy = cam.y + (sy - cssH / 2) / z;
+    for (let i = 0; i < sw; i++) {
+      const sx = left + (i + 0.5) * step;
+      const wx = cam.x + (sx - cssW / 2) / z;
+      const cx = Math.floor(wx);
+      const cy = Math.floor(wy);
+      let r = 12;
+      let g = 9;
+      let b = 7;
+      if (inBoard(cx, cy)) {
+        const rgb = binRGB(cx, cy) || terrainRGB(cx, cy, false);
+        r = rgb[0];
+        g = rgb[1];
+        b = rgb[2];
+        const lineX = Math.floor((wx - half) / grid) !== Math.floor((wx + half) / grid);
+        const lineY = Math.floor((wy - half) / grid) !== Math.floor((wy + half) / grid);
+        if (lineX || lineY) {
+          r = 12;
+          g = 9;
+          b = 7;
+        }
+      }
+      data[p++] = r;
+      data[p++] = g;
+      data[p++] = b;
+      data[p++] = 255;
+    }
+  }
+  if (z >= 2) {
+    for (const cell of cells.values()) {
+      if (!cell || !inBoard(cell.x, cell.y)) continue;
+      const [sx, sy] = worldToScreen(cell.x, cell.y);
+      const x0 = Math.floor((sx - left) / step);
+      const y0 = Math.floor((sy - top) / step);
+      const x1 = Math.ceil((sx + z - left) / step);
+      const y1 = Math.ceil((sy + z - top) / step);
+      if (x1 <= 0 || y1 <= 0 || x0 >= sw || y0 >= sh) continue;
+      let rgb;
+      if (cell.k === "f") rgb = [228, 177, 90];
+      else if (cell.k === "m") rgb = [120, 48, 40];
+      else rgb = terrainRGB(cell.x, cell.y, true);
+      let xa = Math.max(0, x0);
+      let ya = Math.max(0, y0);
+      const xb = Math.min(sw, x1);
+      const yb = Math.min(sh, y1);
+      if (xb - xa >= 3) xa += 1;
+      if (yb - ya >= 3) ya += 1;
+      for (let y = ya; y < yb; y++) {
+        let o = (y * sw + xa) * 4;
+        for (let x = xa; x < xb; x++) {
+          data[o++] = rgb[0];
+          data[o++] = rgb[1];
+          data[o++] = rgb[2];
+          data[o++] = 255;
+        }
+      }
+    }
+  }
+  overviewCtx.putImageData(overviewImage, 0, 0);
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(overviewCanvas, 0, 0, sw, sh, left, top, cw, ch);
+  ctx.restore();
+}
+
 function drawOverview() {
   paintMapImage();
-  const { x, y, size } = boardScreenSpan();
-  const dest = intersectViewport(x, y, size, size);
-  if (dest.w > 0.5 && dest.h > 0.5 && size > 0) {
-    const sx = ((dest.x - x) / size) * mapCanvas.width;
-    const sy = ((dest.y - y) / size) * mapCanvas.height;
-    const sw = (dest.w / size) * mapCanvas.width;
-    const sh = (dest.h / size) * mapCanvas.height;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(mapCanvas, sx, sy, sw, sh, dest.x, dest.y, dest.w, dest.h);
-  }
+  drawOverviewBitmap();
   drawBoardEdge();
   const now = performance.now();
   for (const [id, pin] of pins) {
@@ -1182,7 +1303,7 @@ function paintFrame(now) {
     ctx.rect(board.x, board.y, Math.max(0, board.w), Math.max(0, board.h));
     ctx.clip();
     const v = viewRect();
-    const gutter = cam.z > 22 ? 1.5 : 0;
+    const gutter = cam.z > 22 ? 1.5 : cam.z >= 4 ? 1 : 0;
     const x0 = Math.max(0, v.x0);
     const y0 = Math.max(0, v.y0);
     const x1 = Math.min(boardSize - 1, v.x1);
