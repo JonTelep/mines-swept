@@ -748,7 +748,7 @@ body.boom #field {
   80% { transform: translate(3px, -1px); }
 }
 
-.over-share, .legal button {
+#over-share, .legal button {
   pointer-events: auto;
   margin-top: 14px;
   min-height: 40px;
