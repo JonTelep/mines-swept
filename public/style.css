@@ -750,7 +750,9 @@ body.boom #field {
 .intro-card {
   width: min(460px, 100%);
   max-height: min(88vh, 640px);
+  max-height: min(640px, calc(100dvh - 36px - var(--safe-top) - var(--safe-bot)));
   overflow: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 22px 20px 18px;
   background: rgba(20, 14, 10, 0.96);
   border: 1px solid var(--line);
@@ -1011,6 +1013,17 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .hint { font-size: 0.78rem; }
   .tools { grid-template-columns: repeat(8, minmax(0, 1fr)); }
   .tools button { min-height: 40px; }
+}
+
+@media (max-height: 560px) {
+  .over {
+    top: calc(8px + var(--safe-top));
+    transform: translate(-50%, 0);
+    max-height: calc(100dvh - 16px - var(--safe-top) - var(--safe-bot));
+    overflow: auto;
+    pointer-events: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

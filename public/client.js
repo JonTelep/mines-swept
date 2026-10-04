@@ -57,6 +57,7 @@ let hinted = false;
 const pointers = new Map();
 let pinch = null;
 let press = null;
+const HOLD_MS = 450;
 
 function playerId() {
   let id = localStorage.getItem("minesswept.id");
@@ -128,7 +129,7 @@ function applyResize(box) {
   }
   if (first) {
     const across = cssW < 700 ? 10 : 18;
-    cam.z = clamp(Math.round(cssW / across), Math.max(minZoom(), 12), 48);
+    cam.z = clamp(Math.round(cssW / across), Math.max(fitZoom(), 12), 48);
     goal.z = cam.z;
     goal.x = cam.x;
     goal.y = cam.y;
@@ -153,10 +154,6 @@ function fitZoom() {
   return Math.max(0.05, Math.min(availW / boardSize, availH / boardSize));
 }
 
-function minZoom() {
-  return fitZoom();
-}
-
 function usesOverview() {
   return Math.max(cssW, cssH) / cam.z > 72;
 }
@@ -171,7 +168,7 @@ function useSize(n) {
   boardSize = size;
   cam.x = goal.x = size / 2;
   cam.y = goal.y = size / 2;
-  const z = clamp(32, minZoom(), 48);
+  const z = clamp(32, fitZoom(), 48);
   cam.z = goal.z = z;
   mapN = 0;
   lastView = "";
@@ -657,7 +654,7 @@ function showOver(msg) {
   $("over-tops").replaceChildren();
   if (msg.cells) applyCells(msg.cells, true);
   if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
-    const z = clamp(Math.max(cam.z, 32), minZoom(), 48);
+    const z = clamp(Math.max(cam.z, 32), fitZoom(), 48);
     cam.x = goal.x = msg.x + 0.5;
     cam.y = goal.y = msg.y + 0.5;
     cam.z = goal.z = z;
@@ -1121,11 +1118,25 @@ function drawMinimap() {
   }
 }
 
+function finishHold(now) {
+  if (!press || press.placed || press.moved || !press.hold) return;
+  if (now - press.t < HOLD_MS) return;
+  if (usesOverview() || !inBoard(press.cell[0], press.cell[1])) return;
+  press.placed = true;
+  flag(press.cell[0], press.cell[1]);
+  try {
+    if (typeof navigator.vibrate === "function") navigator.vibrate(15);
+  } catch {
+    /* vibration is optional */
+  }
+}
+
 function draw() {
   requestAnimationFrame(draw);
   try {
     const moved = easeCam();
     const now = performance.now();
+    finishHold(now);
     for (const [id, pin] of pins) if (now - pin.at > 12000) pins.delete(id);
     for (const [id, cursor] of cursors) if (now - cursor.at > 6000) cursors.delete(id);
     const fx = particles.length || flashes.size || cursors.size || pins.size || (press && press.hold && !press.moved);
@@ -1136,12 +1147,11 @@ function draw() {
       paintRound();
     }
     if (me.cooldownUntil > Date.now() || !$("cool").hidden) paintCool(now);
+    draw.fails = 0;
   } catch (err) {
-    frameDirty = true;
-    if (!draw.warned) {
-      draw.warned = true;
-      console.error(err);
-    }
+    draw.fails = (draw.fails || 0) + 1;
+    if (draw.fails === 1 || draw.fails % 60 === 0) console.error(err);
+    if (draw.fails % 15 === 0) frameDirty = true;
   }
 }
 
@@ -1189,12 +1199,18 @@ function paintFrame(now) {
 
     if (press && press.hold && !press.moved && inBoard(press.cell[0], press.cell[1])) {
       const [sx, sy] = worldToScreen(press.cell[0], press.cell[1]);
-      const t = clamp((now - press.t) / 450, 0, 1);
-      ctx.strokeStyle = `rgba(228, 177, 90, ${0.3 + t * 0.7})`;
-      ctx.lineWidth = 2;
+      const size = cam.z - gutter;
+      const t = clamp((now - press.t) / HOLD_MS, 0, 1);
+      const radius = (Math.hypot(size, size) / 2) * t;
+      ctx.save();
       ctx.beginPath();
-      ctx.arc(sx + cam.z / 2, sy + cam.z / 2, (cam.z / 2) * t, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.rect(sx, sy, size, size);
+      ctx.clip();
+      ctx.fillStyle = `rgba(228, 177, 90, ${0.28 + t * 0.5})`;
+      ctx.beginPath();
+      ctx.arc(sx + size / 2, sy + size / 2, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
 
     for (const [id, c] of cursors) {
@@ -1369,7 +1385,7 @@ let digTimer = 0;
 let lastTap = { t: 0, x: 0, y: 0 };
 
 function zoomInto(px, py) {
-  zoomAt(px, py, clamp(Math.max(cam.z * 2.4, 22), minZoom(), 78), false);
+  zoomAt(px, py, clamp(Math.max(cam.z * 2.4, 22), fitZoom(), 78), false);
 }
 
 canvas.addEventListener("pointerdown", (e) => {
@@ -1413,7 +1429,7 @@ canvas.addEventListener("pointermove", (e) => {
     const pts = [...pointers.values()];
     const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
     if (pinch.d > 0) {
-      const next = clamp(pinch.z * (d / pinch.d), minZoom(), 78);
+      const next = clamp(pinch.z * (d / pinch.d), fitZoom(), 78);
       zoomAt((pts[0].x + pts[1].x) / 2, (pts[0].y + pts[1].y) / 2, next, true);
     }
     return;
@@ -1450,20 +1466,17 @@ canvas.addEventListener("pointerup", (e) => {
     return;
   }
   if (e.button !== 0) return;
-  const held = performance.now() - press.t;
+  finishHold(performance.now());
+  const placed = press.placed;
   const cell = press.cell;
   const moved = press.moved;
   const px = press.x;
   const py = press.y;
   press = null;
-  if (moved || pointers.size > 0) return;
+  if (placed || moved || pointers.size > 0) return;
   if (!inBoard(cell[0], cell[1])) return;
   if (usesOverview()) {
     zoomInto(px, py);
-    return;
-  }
-  if (held >= 450) {
-    flag(cell[0], cell[1]);
     return;
   }
   if (flagMode) {
@@ -1473,7 +1486,7 @@ canvas.addEventListener("pointerup", (e) => {
   const nowTap = performance.now();
   if (nowTap - lastTap.t < 320 && Math.hypot(px - lastTap.x, py - lastTap.y) < 28) {
     lastTap.t = 0;
-    zoomAt(px, py, clamp(cam.z * 2, minZoom(), 78), false);
+    zoomAt(px, py, clamp(cam.z * 2, fitZoom(), 78), false);
     return;
   }
   lastTap = { t: nowTap, x: px, y: py };
@@ -1490,11 +1503,11 @@ canvas.addEventListener("wheel", (e) => {
   const [px, py] = localPoint(e);
   const factor = Math.exp(-e.deltaY * 0.0015);
   const base = easeCam.live ? goal.z : cam.z;
-  zoomAt(px, py, clamp(base * factor, minZoom(), 78), false);
+  zoomAt(px, py, clamp(base * factor, fitZoom(), 78), false);
 }, { passive: false });
 
 function zoomAt(px, py, next, immediate) {
-  const z = clamp(next, minZoom(), 78);
+  const z = clamp(next, fitZoom(), 78);
   const base = immediate || !easeCam.live ? cam : goal;
   const wx = base.x + (px - cssW / 2) / base.z;
   const wy = base.y + (py - cssH / 2) / base.z;
@@ -1536,8 +1549,8 @@ addEventListener("keydown", (e) => {
     if (flagMode) flag(x, y);
     else dig(x, y);
   }
-  else if (e.key === "+" || e.key === "=") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) * 1.18, minZoom(), 78), false);
-  else if (e.key === "-" || e.key === "_") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) / 1.18, minZoom(), 78), false);
+  else if (e.key === "+" || e.key === "=") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) * 1.18, fitZoom(), 78), false);
+  else if (e.key === "-" || e.key === "_") zoomAt(cssW / 2, cssH / 2, clamp((easeCam.live ? goal.z : cam.z) / 1.18, fitZoom(), 78), false);
   else if (e.key === "Escape") {
     setLeaderboard(false);
     e.preventDefault();
@@ -1566,11 +1579,11 @@ function toggleFlagMode() {
 $("flag-mode").addEventListener("click", toggleFlagMode);
 $("zoom-in").addEventListener("click", () => {
   const z = easeCam.live ? goal.z : cam.z;
-  zoomAt(cssW / 2, cssH / 2, clamp(z * 1.45, minZoom(), 78), false);
+  zoomAt(cssW / 2, cssH / 2, clamp(z * 1.45, fitZoom(), 78), false);
 });
 $("zoom-out").addEventListener("click", () => {
   const z = easeCam.live ? goal.z : cam.z;
-  zoomAt(cssW / 2, cssH / 2, clamp(z / 1.45, minZoom(), 78), false);
+  zoomAt(cssW / 2, cssH / 2, clamp(z / 1.45, fitZoom(), 78), false);
 });
 $("origin").addEventListener("click", () => fitBoard());
 $("mini").addEventListener("pointerdown", (e) => {
@@ -1581,7 +1594,7 @@ $("mini").addEventListener("pointerdown", (e) => {
   const v = clamp((e.clientY - r.top) / r.height, 0, 1);
   goal.x = u * boardSize;
   goal.y = v * boardSize;
-  if (usesOverview()) goal.z = clamp(28, minZoom(), 48);
+  if (usesOverview()) goal.z = clamp(28, fitZoom(), 48);
   clampCamera(goal);
 });
 function setChat(open) {
@@ -1731,7 +1744,7 @@ if (window.visualViewport) {
 }
 addEventListener("touchmove", (e) => {
   const t = e.target;
-  if (t && t.closest && t.closest("input, textarea, .notes, .chat, .tools")) return;
+  if (t && t.closest && t.closest("input, textarea, .notes, .chat, .tools, .intro-card, .over")) return;
   if (e.cancelable) e.preventDefault();
 }, { passive: false });
 resize();
