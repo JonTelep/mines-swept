@@ -41,6 +41,7 @@ test("round grace, shield, and shame line", () => {
   assert.equal(spareReason(start + 1000, start, "", "ada"), "grace");
   assert.equal(spareReason(start + GRACE_MS - 1, start, "", "ada"), "grace");
   assert.equal(spareReason(start + GRACE_MS, start, "", "ada"), "");
+  assert.equal(spareReason(start + 1000, start, "ada", "ada"), "shield");
   assert.equal(spareReason(start + GRACE_MS + 5, start, "ada", "ada"), "shield");
   assert.equal(spareReason(start + GRACE_MS + 5, start, "ada", "bea"), "");
 

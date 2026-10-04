@@ -335,6 +335,7 @@ export function applyScore(player, result) {
 
 export function attemptDig(field, player, x, y, now, opts = {}) {
   if (opts.phase === "over") return { error: "over" };
+  if (opts.barred || opts.spareReason === "shield") return { error: "shield" };
   const gate = checkRevealAllowed(player, now);
   if (gate.error) return { error: gate.error, until: gate.until };
   const result = dig(field, x, y, {
@@ -349,7 +350,8 @@ export function attemptDig(field, player, x, y, now, opts = {}) {
   return result;
 }
 
-export function attemptFlag(field, player, x, y, now) {
+export function attemptFlag(field, player, x, y, now, opts = {}) {
+  if (opts.barred) return { error: "shield" };
   if (!consumeStamp(player.flagStamps, now, FLAGS_PER_SEC, 1000)) return { error: "rate" };
   return toggleFlag(field, x, y);
 }

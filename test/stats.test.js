@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Board } from "../src/board.js";
-import { setActiveSize } from "../src/game.js";
+import { countMines, deterministicMine, inBounds, neighbors, setActiveSize } from "../src/game.js";
 import {
   DAY_MS,
   FLUSH_MS,
@@ -462,6 +462,103 @@ test("buffered stats flush inside the hibernation idle window and on disconnect"
     const chats = sql.exec(`SELECT COALESCE(SUM(chats), 0) AS chats FROM stat_buckets WHERE grain = 'h'`).toArray()[0];
     assert.equal(Number(chats.chats), 1);
     assert.equal(board.ledger.dirty, false);
+  } finally {
+    setActiveSize(1000);
+  }
+});
+
+function socket() {
+  const sent = [];
+  let att = {};
+  return {
+    sent,
+    send(data) {
+      sent.push(JSON.parse(data));
+    },
+    serializeAttachment(next) {
+      att = next;
+    },
+    deserializeAttachment() {
+      return att;
+    },
+  };
+}
+
+test("the last exploder cannot dig or flag, and a mine stays put", () => {
+  const { board, sql } = openBoard();
+  try {
+    board.shield = "player-ada";
+    board.startedAt = Date.now() - 60_000;
+    board.metaSet("shield", "player-ada");
+    board.metaSet("started", String(board.startedAt));
+    const round = board.round;
+
+    let mine = null;
+    let beside = null;
+    for (let y = 0; y < board.boardSize && !mine; y++) {
+      for (let x = 0; x < board.boardSize && !mine; x++) {
+        if (!deterministicMine(board.seed, x, y)) continue;
+        for (const [nx, ny] of neighbors(x, y)) {
+          if (!inBounds(nx, ny) || deterministicMine(board.seed, nx, ny)) continue;
+          mine = [x, y];
+          beside = [nx, ny];
+          break;
+        }
+      }
+    }
+    assert.ok(mine, "expected a mine with a safe neighbor");
+    let other = null;
+    for (let y = 0; y < board.boardSize && !other; y++) {
+      for (let x = 0; x < board.boardSize; x++) {
+        if (deterministicMine(board.seed, x, y)) continue;
+        if (x === beside[0] && y === beside[1]) continue;
+        other = [x, y];
+        break;
+      }
+    }
+    assert.ok(other);
+
+    const view = {
+      isMine(x, y) {
+        const row = sql.exec(`SELECT mine FROM overrides WHERE x = ? AND y = ?`, x, y).toArray()[0];
+        if (row) return Number(row.mine) === 1;
+        return deterministicMine(board.seed, x, y);
+      },
+    };
+    const around = () => neighbors(mine[0], mine[1])
+      .filter(([x, y]) => inBounds(x, y))
+      .map(([x, y]) => {
+        const row = sql.exec(`SELECT kind, n FROM cells WHERE x = ? AND y = ?`, x, y).toArray()[0];
+        return { x, y, n: countMines(view, x, y), kind: row ? row.kind : 0, stored: row ? row.n : null };
+      });
+
+    const ada = socket();
+    const bea = socket();
+    board.hello(ada, {}, { t: "hello", id: "player-ada", name: "Ada" });
+    board.hello(bea, {}, { t: "hello", id: "player-bea", name: "Bea" });
+    assert.equal(ada.sent.find((m) => m.t === "welcome").sitting, true);
+    assert.equal(bea.sent.find((m) => m.t === "welcome").sitting, false);
+
+    board.onReveal(bea, bea.deserializeAttachment(), { t: "reveal", x: beside[0], y: beside[1] });
+    assert.equal(board.phase, "play");
+    const before = around();
+    assert.ok(before.some((cell) => cell.stored != null));
+    const overridesBefore = sql.exec(`SELECT COUNT(*) AS n FROM overrides`).toArray()[0].n;
+
+    ada.sent.length = 0;
+    board.onReveal(ada, ada.deserializeAttachment(), { t: "reveal", x: mine[0], y: mine[1] });
+    board.onReveal(ada, ada.deserializeAttachment(), { t: "reveal", x: other[0], y: other[1] });
+    board.onFlag(ada, ada.deserializeAttachment(), { t: "flag", x: mine[0], y: mine[1] });
+
+    assert.deepEqual(ada.sent.map((m) => m.reason), ["shield", "shield", "shield"]);
+    assert.equal(ada.sent.some((m) => m.t === "delta" || m.t === "over"), false);
+    assert.equal(board.phase, "play");
+    assert.equal(board.round, round);
+    assert.equal(view.isMine(mine[0], mine[1]), true);
+    assert.equal(sql.exec(`SELECT kind FROM cells WHERE x = ? AND y = ?`, mine[0], mine[1]).toArray().length, 0);
+    assert.equal(sql.exec(`SELECT kind FROM cells WHERE x = ? AND y = ?`, other[0], other[1]).toArray().length, 0);
+    assert.equal(sql.exec(`SELECT COUNT(*) AS n FROM overrides`).toArray()[0].n, overridesBefore);
+    assert.deepEqual(around(), before);
   } finally {
     setActiveSize(1000);
   }

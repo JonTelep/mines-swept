@@ -1,5 +1,5 @@
 const canvas = document.getElementById("field");
-const ctx = canvas.getContext("2d");
+let ctx = canvas.getContext("2d");
 const $ = (id) => document.getElementById(id);
 
 const NUM = {
@@ -56,6 +56,7 @@ let lastView = "";
 let viewTimer = 0;
 let toastTimer = 0;
 let hinted = false;
+let sitting = false;
 
 const pointers = new Map();
 let pinch = null;
@@ -131,9 +132,7 @@ function applyResize(box) {
     mini.style.height = css + "px";
   }
   if (first) {
-    const across = cssW < 700 ? 10 : 18;
-    cam.z = clamp(Math.round(cssW / across), Math.max(fitZoom(), 12), 48);
-    goal.z = cam.z;
+    cam.z = goal.z = playZoom();
     goal.x = cam.x;
     goal.y = cam.y;
     resize.did = true;
@@ -209,6 +208,38 @@ function fitBoard() {
   goal.x = center.x;
   goal.y = center.y;
   clampCamera(goal);
+}
+
+function playZoom() {
+  const across = cssW < 700 ? 10 : 18;
+  const fit = fitZoom();
+  const minZ = Number.isFinite(fit) ? Math.max(fit, 12) : 12;
+  const raw = Math.round(cssW / across);
+  const z = clamp(Number.isFinite(raw) && raw > 0 ? raw : 28, minZ, 48);
+  return Number.isFinite(z) && z > 0 ? z : 28;
+}
+
+function restoreContext() {
+  try {
+    const fresh = canvas.getContext("2d");
+    if (fresh) ctx = fresh;
+    ctx.setTransform(dpr || 1, 0, 0, dpr || 1, 0, 0);
+  } catch {
+    /* The context may still be lost. contextrestored tries again. */
+  }
+  frameDirty = true;
+}
+
+function resetView() {
+  const z = playZoom();
+  const center = viewCenter(z);
+  cam.x = goal.x = Number.isFinite(center.x) ? center.x : boardSize / 2;
+  cam.y = goal.y = Number.isFinite(center.y) ? center.y : boardSize / 2;
+  cam.z = goal.z = z;
+  easeCam.live = false;
+  restoreContext();
+  frameDirty = true;
+  scheduleView();
 }
 
 function ensureMap() {
@@ -397,6 +428,7 @@ function onMsg(msg) {
   if (msg.t === "welcome") {
     me = { ...me, ...msg.you };
     localStorage.setItem("minesswept.name", me.name);
+    setSitting(Boolean(msg.sitting));
     paintHud(msg.stats);
     paintLeaders(msg.leaderboard || []);
     paintWho(msg.players || []);
@@ -444,7 +476,10 @@ function onMsg(msg) {
     localStorage.setItem("minesswept.name", me.name);
     paintYou();
     if (msg.spared === "grace") toast("The field is still settling.");
-    if (msg.spared === "shield") toast("You blew the last round. This one isn't yours to end.");
+    if (msg.spared === "shield") {
+      setSitting(true);
+      toast("You're trolling, sit this one out.");
+    }
     if (msg.cooldownUntil > Date.now() && msg.cooldownUntil !== wasCool) {
       $("live").textContent = "Short cooldown.";
     }
@@ -485,7 +520,9 @@ function onMsg(msg) {
       over: "This round is already over.",
       blocked: "Message not sent",
       chat: "Slow down a little.",
+      shield: "You're trolling, sit this one out.",
     };
+    if (msg.reason === "shield") setSitting(true);
     toast(lines[msg.reason] || "Couldn't do that.");
   }
 }
@@ -746,8 +783,25 @@ function showRound(msg) {
   if (msg.stats) takeStats(msg.stats);
   if (msg.leaderboard) paintLeaders(msg.leaderboard);
   paintHistory(msg.history, msg.best || msg.stats?.best, msg.fame);
+  setSitting(Boolean(msg.shield) && msg.shield === me.id);
   frameDirty = true;
   paintRound();
+}
+
+function setSitting(on) {
+  sitting = Boolean(on);
+  document.body.classList.toggle("sitting", sitting);
+  const banner = $("sit-out");
+  if (banner) banner.hidden = !sitting;
+  const flagBtn = $("flag-mode");
+  if (flagBtn) flagBtn.disabled = sitting;
+  if (!sitting) return;
+  flagMode = false;
+  document.body.classList.remove("flagging");
+  if (flagBtn) {
+    flagBtn.setAttribute("aria-pressed", "false");
+    flagBtn.textContent = "Flag";
+  }
 }
 
 function addChat(m) {
@@ -954,6 +1008,10 @@ function burst(x, y, color) {
 
 function dig(x, y) {
   dismissHint();
+  if (sitting) {
+    toast("You're trolling, sit this one out.");
+    return;
+  }
   if (!inBoard(x, y)) return;
   if (flagMode) {
     send({ t: "flag", x, y });
@@ -966,6 +1024,10 @@ function dig(x, y) {
 
 function flag(x, y) {
   dismissHint();
+  if (sitting) {
+    toast("You're trolling, sit this one out.");
+    return;
+  }
   if (!inBoard(x, y)) return;
   send({ t: "flag", x, y });
   flagSound();
@@ -1281,8 +1343,10 @@ function draw() {
     draw.fails = 0;
   } catch (err) {
     draw.fails = (draw.fails || 0) + 1;
-    if (draw.fails === 1 || draw.fails % 60 === 0) console.error(err);
-    if (draw.fails % 15 === 0) frameDirty = true;
+    if (draw.fails === 1 || draw.fails % 30 === 0) console.error(err);
+    if (draw.fails === 2) restoreContext();
+    else if (draw.fails === 4) resetView();
+    if (draw.fails < 6 || draw.fails % 20 === 0) frameDirty = true;
   }
 }
 
@@ -1546,7 +1610,7 @@ canvas.addEventListener("pointerdown", (e) => {
   }
   if (e.button !== 0) return;
   const cell = cellAt(px, py);
-  press = { x: px, y: py, cell, t: performance.now(), moved: false, hold: !knownOpen(cell[0], cell[1]), id: e.pointerId };
+  press = { x: px, y: py, cell, t: performance.now(), moved: false, hold: !sitting && !knownOpen(cell[0], cell[1]), id: e.pointerId };
 });
 
 canvas.addEventListener("pointermove", (e) => {
@@ -1577,6 +1641,10 @@ canvas.addEventListener("pointermove", (e) => {
     clearTimeout(digTimer);
   }
   if (press.moved) {
+    if (!Number.isFinite(cam.z) || cam.z <= 0) {
+      resetView();
+      return;
+    }
     cam.x -= (px - press.lx) / cam.z;
     cam.y -= (py - press.ly) / cam.z;
     clampCamera(cam);
@@ -1648,11 +1716,19 @@ canvas.addEventListener("wheel", (e) => {
 function zoomAt(px, py, next, immediate) {
   const z = clamp(next, fitZoom(), 78);
   const base = immediate || !easeCam.live ? cam : goal;
+  if (!Number.isFinite(z) || z <= 0 || !Number.isFinite(base.z) || base.z <= 0 || !Number.isFinite(px) || !Number.isFinite(py)) {
+    resetView();
+    return;
+  }
   const wx = base.x + (px - cssW / 2) / base.z;
   const wy = base.y + (py - cssH / 2) / base.z;
   goal.z = z;
   goal.x = wx - (px - cssW / 2) / z;
   goal.y = wy - (py - cssH / 2) / z;
+  if (!Number.isFinite(goal.x) || !Number.isFinite(goal.y) || !Number.isFinite(goal.z)) {
+    resetView();
+    return;
+  }
   clampCamera(goal);
   if (immediate) {
     cam.x = goal.x;
@@ -1660,6 +1736,7 @@ function zoomAt(px, py, next, immediate) {
     cam.z = goal.z;
     scheduleView();
   }
+  frameDirty = true;
 }
 
 let lastCursorSent = 0;
@@ -1677,6 +1754,10 @@ function maybeCursor(x, y) {
 addEventListener("keydown", (e) => {
   if (e.target.matches?.("input, textarea")) return;
   if ((e.key === " " || e.key === "Enter") && e.target.closest?.("button, a")) return;
+  if (!Number.isFinite(cam.z) || cam.z <= 0) {
+    resetView();
+    return;
+  }
   const step = 80 / cam.z;
   if (e.key === "ArrowLeft" || e.key === "a") cam.x -= step;
   else if (e.key === "ArrowRight" || e.key === "d") cam.x += step;
@@ -1707,6 +1788,7 @@ addEventListener("keydown", (e) => {
 });
 
 function toggleFlagMode() {
+  if (sitting) return;
   flagMode = !flagMode;
   const btn = $("flag-mode");
   btn.setAttribute("aria-pressed", flagMode ? "true" : "false");
@@ -1725,6 +1807,14 @@ $("zoom-out").addEventListener("click", () => {
   zoomAt(cssW / 2, cssH / 2, clamp(z / 1.45, fitZoom(), 78), false);
 });
 $("origin").addEventListener("click", () => fitBoard());
+$("reset-view").addEventListener("click", () => resetView());
+canvas.addEventListener("contextlost", (e) => {
+  e.preventDefault();
+});
+canvas.addEventListener("contextrestored", () => {
+  restoreContext();
+  resetView();
+});
 $("mini").addEventListener("pointerdown", (e) => {
   e.preventDefault();
   e.stopPropagation();
