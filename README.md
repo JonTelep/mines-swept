@@ -76,9 +76,23 @@ Unit tests cover chunk-and-seed mine generation, flood fill, mine relocation, de
 
 Deploys restart the Durable Object and disconnect open sockets. History and chat stay. The first boot of this version, if it finds a board that is not already 1,000 by 1,000, ends that open round without writing a shame row, keeps the hall of shame and the chat, deletes the deploy-check player `deploycheck-bot01`, and starts the next round on a fresh 1,000 by 1,000 board. Players with zero digs are left off the public leaderboard.
 
+## Newsletter
+
+The board and the stats page take signups for new boards and events. `POST /api/subscribe` checks the address (syntax, disposable domain, MX), then stores an active contact in a Resend segment. It does not send email. `GET /api/unsubscribe` shows a signed link. `POST /api/unsubscribe` is the one-click unsubscribe and marks that contact unsubscribed. A later signup for that address does not turn it back on.
+
+These Worker secrets have to be set with `npx wrangler secret put` before a signup can succeed. None of them belong in the repo. If `RESEND_SEGMENT_ID` is missing, signup returns 503 and writes nothing.
+
+| Secret | What it is |
+|---|---|
+| `RESEND_API_KEY` | Resend API key with contact and segment access. A send-only key cannot update contacts. |
+| `NEWSLETTER_SECRET` | HMAC secret for unsubscribe links. Long random string. |
+| `RESEND_SEGMENT_ID` | Resend segment id for the minesSwept list (new boards and events). |
+
+Create the segment in Resend first, then put its id in `RESEND_SEGMENT_ID`. The postal line on the form and the unsubscribe page is Telep IO LLC, PO Box 187, Valley City, OH 44280.
+
 ## Architecture
 
-One Cloudflare Worker serves the static client and routes `/ws`, `/api/*`, and `/og.png` to a single SQLite-backed Durable Object named `world`.
+One Cloudflare Worker serves the static client. `/api/subscribe` and `/api/unsubscribe` stay on the worker. `/ws`, the other `/api/*` routes, and `/og.png` go to a single SQLite-backed Durable Object named `world`.
 
 Mines are not stored. A world seed plus the cell coordinate decides them, so the unrevealed field is not written down. Overrides (a relocated mine, or a mine planted to stop a runaway flood) and opened cells live in SQLite. Clients only ever receive cells that are already revealed or flagged. Far zoom uses a second table of 8×8 bins and a short binary summary, not the cell list.
 

@@ -87,6 +87,21 @@
       </div>
     </section>
     <p class="fine">Digs, sessions, and chat start with this version of the field. Earlier days are rebuilt from the rounds, the flags, and when each player was last on the board. Counts use the anonymous player id already stored for the game. IP addresses are not kept.</p>
+    <form class="signup" id="signup" action="/api/subscribe" method="post" accept-charset="utf-8">
+      <h2>New boards and events</h2>
+      <p class="signup-note">A note when a new board or event goes up. Signing up adds you to the list and sends no email.</p>
+      <div class="hp" aria-hidden="true">
+        <label>Website <input type="text" name="website" tabindex="-1" autocomplete="off" /></label>
+      </div>
+      <input type="hidden" name="placement" value="stats" />
+      <div class="row">
+        <label class="sr" for="signup-email">Email</label>
+        <input id="signup-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required placeholder="you@example.com" />
+        <button type="submit">Sign up</button>
+      </div>
+      <p class="status" id="signup-status" role="status"></p>
+      <p class="postal">Telep IO LLC. PO Box 187, Valley City, OH 44280.</p>
+    </form>
     <footer class="other-sites">
       Our other sites:
       <a href="https://telep.io/">telep.io websites for small businesses</a>
@@ -109,5 +124,6 @@
     </footer>
   </main>
   <script src="/stats.js"></script>
+  <script src="/signup.js"></script>
 </body>
 </html>
