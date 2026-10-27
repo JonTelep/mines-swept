@@ -1973,7 +1973,7 @@ if (window.visualViewport) {
 }
 addEventListener("touchmove", (e) => {
   const t = e.target;
-  if (t && t.closest && t.closest("input, textarea, .notes, .chat, .tools, .intro-card, .over, .other-sites")) return;
+  if (t && t.closest && t.closest("input, textarea, .notes, .chat, .tools, .intro-card, .over, .other-sites, .signup")) return;
   if (e.cancelable) e.preventDefault();
 }, { passive: false });
 

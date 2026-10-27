@@ -1,6 +1,9 @@
-# minesSwept — one Worker, one SQLite Durable Object, static files on the same Worker.
+# minesSwept: one Worker, one SQLite Durable Object, static files on the same Worker.
 # CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID come from the environment at deploy time.
 # No secrets live in this repo.
+# Newsletter Worker secrets (wrangler secret put), required before signup works:
+# RESEND_API_KEY, NEWSLETTER_SECRET, RESEND_SEGMENT_ID
+# Signup fails closed when RESEND_SEGMENT_ID is missing. The worker sends no email.
 
 name = "minesswept"
 main = "src/index.js"

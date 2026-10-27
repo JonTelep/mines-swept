@@ -124,9 +124,107 @@ body.flagging #field { cursor: cell; }
   color: var(--paper);
 }
 
+.signup {
+  position: relative;
+  z-index: 3;
+  align-self: flex-start;
+  width: min(420px, 100%);
+  margin: 0;
+  padding: 8px 10px 10px;
+  background: rgba(20, 14, 10, 0.94);
+  border: 1px solid var(--line);
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.signup h2 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+
+.signup p {
+  margin: 4px 0 8px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: #d9c7a4;
+}
+
+.signup .row {
+  display: flex;
+  gap: 6px;
+}
+
+.signup input[type="email"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 10px;
+  background: #0c0907;
+  border: 1px solid var(--line);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 16px;
+  user-select: text;
+  -webkit-user-select: text;
+  touch-action: manipulation;
+}
+
+.signup button {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--brass);
+  color: var(--ink);
+  border: 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  touch-action: manipulation;
+}
+
+.signup .status {
+  min-height: 1.2em;
+  margin: 6px 0 0;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--moss);
+}
+
+.signup .postal {
+  margin: 6px 0 0;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: #b5a48a;
+}
+
+.signup .hp {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.tools,
+.tools button,
+#mini {
+  pointer-events: auto;
+}
+
 .top, .ticket, .notes, .chat, .dock, .hint, .toast, .over, #mini {
   position: fixed;
   z-index: 2;
+}
+
+.dock {
+  z-index: 4;
 }
 
 .top {
@@ -679,7 +777,8 @@ h2 {
 #mini {
   right: 16px;
   bottom: calc(var(--hud-h) + 12px);
-  z-index: 3;
+  z-index: 6;
+  pointer-events: auto;
   width: 104px;
   height: 104px;
   background: #0c0907;
@@ -1032,9 +1131,16 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   }
 
   .hud-bottom .ticket,
+  .hud-bottom .signup,
   .hud-bottom .tools,
-  .hud-bottom .tools button {
+  .hud-bottom .tools button,
+  #mini {
     pointer-events: auto;
+  }
+
+  .signup {
+    width: 100%;
+    align-self: stretch;
   }
 
   .hint {
@@ -1103,8 +1209,11 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   .ticket { padding: 6px 8px; }
   .ticket .score { font-size: 1.25rem; }
   .hint { font-size: 0.78rem; }
+  .signup { padding: 6px 8px; }
+  .signup .signup-note { display: none; }
   .tools { grid-template-columns: repeat(8, minmax(0, 1fr)); }
-  .tools button { min-height: 40px; }
+  .tools button { min-height: 40px; pointer-events: auto; }
+  #mini { pointer-events: auto; }
 }
 
 @media (max-height: 560px) {

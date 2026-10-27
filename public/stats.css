@@ -206,6 +206,74 @@ h2 {
   font-size: 0.95rem;
 }
 
+.signup {
+  margin: 28px 0 0;
+  padding: 14px;
+  background: rgba(34, 25, 16, 0.72);
+  border: 1px solid var(--line);
+}
+
+.signup h2 {
+  margin: 0 0 6px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+
+.signup p { margin: 0 0 10px; color: #d9c7a4; }
+
+.signup .row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.signup input[type="email"] {
+  flex: 1 1 220px;
+  min-height: 44px;
+  padding: 0 10px;
+  background: #0c0907;
+  border: 1px solid var(--line);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 16px;
+}
+
+.signup button {
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--brass);
+  color: var(--ink);
+  border: 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.signup .status {
+  min-height: 1.2em;
+  margin: 8px 0 0;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--moss);
+}
+
+.signup .postal {
+  margin: 8px 0 0;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: #b5a48a;
+}
+
+.signup .hp {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
 .other-sites {
   margin: 28px 0 0;
   padding: 16px 8px 0;

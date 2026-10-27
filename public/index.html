@@ -91,6 +91,21 @@
   <canvas id="mini" width="104" height="104" aria-label="Where you are on the board"></canvas>
 
   <div class="hud-bottom">
+    <form class="signup" id="signup" action="/api/subscribe" method="post" accept-charset="utf-8">
+      <h2>New boards and events</h2>
+      <p class="signup-note">A note when a new board or event goes up. Signing up adds you to the list and sends no email.</p>
+      <div class="hp" aria-hidden="true">
+        <label>Website <input type="text" name="website" tabindex="-1" autocomplete="off" /></label>
+      </div>
+      <input type="hidden" name="placement" value="board" />
+      <div class="row">
+        <label class="sr" for="signup-email">Email</label>
+        <input id="signup-email" name="email" type="email" inputmode="email" autocomplete="email" maxlength="254" required placeholder="you@example.com" />
+        <button type="submit">Sign up</button>
+      </div>
+      <p class="status" id="signup-status" role="status"></p>
+      <p class="postal">Telep IO LLC. PO Box 187, Valley City, OH 44280.</p>
+    </form>
     <p class="hint" id="hint">Tap to dig. Hold to flag. Drag to pan. One mine ends the round for everyone.</p>
     <section class="ticket" aria-label="Score">
       <button type="button" id="name" class="name" aria-label="Your name. Activate to change it.">…</button>
@@ -140,5 +155,6 @@
   <p class="toast" id="toast" role="status"></p>
   <div id="live" class="sr" aria-live="assertive"></div>
   <script src="/client.js" type="module"></script>
+  <script src="/signup.js"></script>
 </body>
 </html>
