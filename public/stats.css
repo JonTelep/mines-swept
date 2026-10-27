@@ -206,6 +206,26 @@ h2 {
   font-size: 0.95rem;
 }
 
+.other-sites {
+  margin: 28px 0 0;
+  padding: 16px 8px 0;
+  border-top: 1px solid rgba(234, 215, 180, 0.12);
+  color: #b5a48a;
+  font-size: 12px;
+  line-height: 1.8;
+  text-align: center;
+}
+
+.other-sites a {
+  color: inherit;
+  text-underline-offset: 2px;
+}
+
+.other-sites a:hover,
+.other-sites a:focus-visible {
+  color: var(--paper);
+}
+
 .halls {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;

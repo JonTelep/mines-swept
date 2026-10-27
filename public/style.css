@@ -14,6 +14,7 @@
   --safe-bot: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+  --hud-h: 200px;
   color-scheme: dark;
 }
 
@@ -66,8 +67,62 @@ body.flagging #field { cursor: cell; }
 
 .label-short { display: none; }
 
-/* Children stay position:fixed on desktop, so this box takes no space. */
-.hud-bottom { display: contents; }
+/* Hint, tools, and the other-sites row sit in this bar. The score ticket stays fixed to the corner until the phone layout pulls it in. */
+.hud-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  position: fixed;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding:
+    0
+    calc(16px + var(--safe-right))
+    calc(8px + var(--safe-bot))
+    calc(16px + var(--safe-left));
+  pointer-events: none;
+}
+
+.hud-bottom .hint,
+.hud-bottom .dock {
+  position: relative;
+  inset: auto;
+  transform: none;
+  width: auto;
+  max-width: none;
+  margin: 0;
+}
+
+.hud-bottom .hint {
+  align-self: center;
+  max-width: min(520px, 100%);
+}
+
+.other-sites {
+  margin: 0;
+  padding: 8px 10px;
+  background: rgba(20, 14, 10, 0.94);
+  border: 1px solid var(--line);
+  color: #b5a48a;
+  font-size: 12px;
+  line-height: 1.7;
+  text-align: center;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.other-sites a {
+  color: inherit;
+  text-underline-offset: 2px;
+}
+
+.other-sites a:hover,
+.other-sites a:focus-visible {
+  color: var(--paper);
+}
 
 .top, .ticket, .notes, .chat, .dock, .hint, .toast, .over, #mini {
   position: fixed;
@@ -274,7 +329,7 @@ h1 em {
   top: calc(18px + var(--safe-top));
   right: 16px;
   width: min(260px, calc(100vw - 32px));
-  max-height: calc(100vh - 120px);
+  max-height: calc(100dvh - var(--hud-h) - 32px - var(--safe-top));
   overflow: auto;
   padding: 14px 14px 12px;
   background: rgba(20, 14, 10, 0.88);
@@ -461,7 +516,7 @@ h2 {
 
 .chat {
   left: 16px;
-  bottom: calc(72px + var(--safe-bot));
+  bottom: calc(var(--hud-h) + 12px);
   width: min(320px, calc(100vw - 32px));
   max-height: min(320px, 42vh);
   display: flex;
@@ -622,7 +677,7 @@ h2 {
 
 #mini {
   right: 16px;
-  bottom: calc(72px + var(--safe-bot));
+  bottom: calc(var(--hud-h) + 12px);
   z-index: 3;
   width: 104px;
   height: 104px;
@@ -703,7 +758,7 @@ body.winflash .veil {
   transition: opacity 0.6s ease;
 }
 
-.hint.gone { opacity: 0; }
+.hint.gone { display: none; }
 
 .toast {
   left: 50%;
