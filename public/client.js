@@ -1973,10 +1973,20 @@ if (window.visualViewport) {
 }
 addEventListener("touchmove", (e) => {
   const t = e.target;
-  if (t && t.closest && t.closest("input, textarea, .notes, .chat, .tools, .intro-card, .over")) return;
+  if (t && t.closest && t.closest("input, textarea, .notes, .chat, .tools, .intro-card, .over, .other-sites")) return;
   if (e.cancelable) e.preventDefault();
 }, { passive: false });
+
+function syncHudHeight() {
+  const hud = document.querySelector(".hud-bottom");
+  if (!hud) return;
+  document.documentElement.style.setProperty("--hud-h", `${Math.ceil(hud.getBoundingClientRect().height)}px`);
+}
+
 resize();
+syncHudHeight();
+if (window.ResizeObserver) new ResizeObserver(syncHudHeight).observe(document.querySelector(".hud-bottom"));
+document.fonts?.ready?.then(syncHudHeight);
 connect();
 requestAnimationFrame(draw);
 if (localStorage.getItem("minesswept.intro") === "1") setTimeout(dismissHint, 14000);
